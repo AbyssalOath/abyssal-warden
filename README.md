@@ -63,6 +63,7 @@ The example key is a **test key**; never trust it for real content.
 
 ## Documentation
 
+* [ARCHITECTURE.md](ARCHITECTURE.md): map of the codebase
 * [Documentation index](docs/README.md)
 * [Architecture overview](docs/architecture/overview.md)
 * [Threat model](docs/security/threat-model.md)

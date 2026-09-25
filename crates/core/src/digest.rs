@@ -52,9 +52,11 @@ impl FromStr for Sha256Digest {
             return Err(DigestParseError::InvalidLength(bytes.len()));
         }
         let mut out = [0u8; 32];
-        for (i, pair) in bytes.chunks_exact(2).enumerate() {
-            let hi = hex_value(pair[0]).ok_or(DigestParseError::InvalidCharacter(i * 2))?;
-            let lo = hex_value(pair[1]).ok_or(DigestParseError::InvalidCharacter(i * 2 + 1))?;
+        // Length is checked above, so there is no remainder.
+        let (pairs, _) = bytes.as_chunks::<2>();
+        for (i, &[h, l]) in pairs.iter().enumerate() {
+            let hi = hex_value(h).ok_or(DigestParseError::InvalidCharacter(i * 2))?;
+            let lo = hex_value(l).ok_or(DigestParseError::InvalidCharacter(i * 2 + 1))?;
             out[i] = (hi << 4) | lo;
         }
         Ok(Self(out))

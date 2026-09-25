@@ -262,7 +262,9 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
         return None;
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
-    for chunk in bytes.chunks_exact(4) {
+    // Length is checked above, so there is no remainder.
+    let (chunks, _) = bytes.as_chunks::<4>();
+    for chunk in chunks {
         let pad = chunk.iter().rev().take_while(|&&c| c == b'=').count();
         if pad > 2 {
             return None;

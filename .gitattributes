@@ -1,0 +1,16 @@
+# Store text with LF line endings and check it out with LF on every platform.
+* text=auto eol=lf
+
+# Signed detection content, signatures and keys must be byte-exact. Any
+# line-ending conversion (e.g. core.autocrlf on Windows) changes the bytes and
+# invalidates their minisign signatures, so never treat them as text.
+examples/signatures/** -text
+examples/rules/** -text
+examples/keys/** -text
+*.minisig -text
+*.yar -text
+*.yara -text
+
+# Binary files that git should never diff or convert.
+*.png binary
+*.ico binary

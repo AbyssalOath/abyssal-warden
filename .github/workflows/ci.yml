@@ -72,7 +72,8 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Unit, integration (crates/*/tests) and CLI black-box tests.
-      - run: cargo test --workspace --all-targets --locked
+      # --no-fail-fast: report failures from every test binary, not just the first.
+      - run: cargo test --workspace --all-targets --locked --no-fail-fast
       - run: cargo test --workspace --doc --locked
 
   docs:

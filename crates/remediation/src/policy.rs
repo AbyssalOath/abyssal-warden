@@ -144,14 +144,26 @@ mod tests {
                 PotentiallyUnwanted,
                 "/home/u/evil",
             ),
-            finding(KnownIndicator, Confirmed, Malware, "/usr/bin/ls"),
-            finding(KnownIndicator, Confirmed, Malware, "/etc/passwd"),
         ] {
             assert!(auto_quarantine_target(&f).is_err(), "{f:?}");
         }
         let mut review = ok.clone();
         review.recommended_action = RecommendedAction::Review;
         assert!(auto_quarantine_target(&review).is_err());
+    }
+
+    // Protected prefixes are defined for Unix only; the quarantine store is
+    // not supported on other platforms.
+    #[cfg(unix)]
+    #[test]
+    fn confirmed_malware_in_system_dirs_is_not_eligible() {
+        use Confidence::*;
+        use FindingKind::*;
+        use ThreatCategory::*;
+        for path in ["/usr/bin/ls", "/etc/passwd"] {
+            let f = finding(KnownIndicator, Confirmed, Malware, path);
+            assert!(auto_quarantine_target(&f).is_err(), "{path}");
+        }
     }
 
     #[cfg(unix)]
