@@ -3,6 +3,7 @@ name = "warden-yara"
 description = "Abyssal Warden YARA-X detection provider"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
@@ -33,6 +34,7 @@ yara-x = { version = "1.20", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 warden-engine.workspace = true
 tempfile.workspace = true
 

@@ -58,17 +58,27 @@ residual risk).
 * **Residual:** YARA-X and wasmtime are large dependencies whose own
   `unsafe` code we do not audit. A parser bug runs in the scanning process
   with the user's privileges.
-* **Future:** a sandboxed parser process (seccomp/landlock, AppContainer)
-  once the service exists.
+* **Current (service, Linux):** service jobs parse content in a separate
+  process running as the unprivileged scanner account with only
+  `CAP_DAC_READ_SEARCH` (or as the requesting user), with `no_new_privs`;
+  a parser bug there cannot write to the system or the quarantine store.
+* **Future:** seccomp/landlock inside that process; AppContainer on Windows;
+  the same separation for direct CLI scans.
 
 ### T2: Archives and decompression bombs
 
-* **Current:** mitigated by scope. Archives are not opened, so an archive
-  counts as one opaque file. This is also a *detection gap*
-  ([known limitations](../known-limitations.md)).
-* **Future:** limits on total expanded bytes, expansion ratio, entry count,
-  nesting depth and time. Extract to memory or a private temp dir, never by
-  following entry paths (zip-slip).
+* **Current:** mitigated for ZIP ([archives.md](../detection/archives.md),
+  [ADR-0011](../architecture/decisions/0011-archive-scanning.md)).
+  * Members are decompressed in memory only; names are never used as paths,
+    so zip-slip does not apply.
+  * Bomb and exhaustion limits: total decompressed bytes per file (1 GiB),
+    nesting depth (3), entries per archive (10,000), member bytes kept (8 MiB),
+    per-file deadline, checked every 64 KiB of output.
+  * The parser runs inside `catch_unwind`, under the stall watchdog, and is
+    fuzzed.
+  * Everything not inspected is reported.
+* **Residual:** other archive formats are not expanded (a detection gap,
+  not a safety risk).
 
 ### T3: Path traversal
 
@@ -87,16 +97,22 @@ residual risk).
 * **Current:** mitigated.
   * Default policy `skip`: links are not followed and are reported as
     skipped.
-  * Files are opened with `O_NOFOLLOW` (Linux) or
-    `FILE_FLAG_OPEN_REPARSE_POINT` (Windows), so a link swapped in after
-    enumeration is not followed. This is tested.
+  * On Linux, files are opened with `openat2(RESOLVE_NO_SYMLINKS)`: no link
+    is followed in *any* path component, so a file or directory swapped for a
+    link after enumeration is refused (tested). Kernels before 5.6 fall back
+    to `O_NOFOLLOW`. On Windows, `FILE_FLAG_OPEN_REPARSE_POINT` protects the
+    final component.
   * `follow` policy uses walkdir's loop detection; loops become issues (tested).
     The report warns that followed links may leave the scan roots.
-  * Only the final path component is protected. A *directory* swapped for a
-    link mid-scan can redirect a later open. That is harmless for a read-only
-    scanner running as the user, but **it is not acceptable for privileged
-    remediation**, which must use `openat2(RESOLVE_NO_SYMLINKS)` or
-    handle-relative operations.
+  * Under `follow`, a file reachable through several links is scanned once
+    (de-duplicated by device and inode on Unix, volume serial number and file
+    index on Windows).
+  * On Windows, other platforms, and Linux < 5.6, files are opened relative
+    to a handle on their scan root (`cap-std`), so resolution can never leave
+    the root even if directories are swapped mid-scan
+    ([ADR-0010](../architecture/decisions/0010-root-relative-opens.md)).
+  * **Residual:** on those platforms a link that stays inside the root can
+    redirect a read to another in-root file (in scope anyway).
 
 ### T5: FIFOs, devices and special files
 
@@ -122,25 +138,41 @@ residual risk).
   minisign key unless `--allow-unsigned` is given. Verification happens
   before parsing, and invalid signatures are always fatal. Reports record
   the signer and warn about unsigned content.
-* **Residual:** a *validly signed* old database is accepted (no rollback
-  protection), and a malicious *trusted* signer can still cause false
-  positives. The damage is limited because automatic remediation only acts
+* **Current (bundles):** signed manifests pin every file; rollback,
+  equivocation and expiry are enforced; keyrings bound key validity, set a
+  signature threshold and per-bundle sequence floors; revocations travel
+  with content and only ever remove trust
+  ([content-trust.md](content-trust.md)).
+* **Residual:** individually signed files have no rollback or expiry
+  protection (the report warns), and a malicious *trusted* signer can still
+  cause false positives. The damage is limited because automatic remediation only acts
   on confirmed malware hash matches, re-checks the hash, and never touches
   system directories.
 
 ### T7: Compromised update sources
 
-* **Current:** partial. There is no update mechanism, but content
-  signatures are verified against user-pinned keys (T6).
-* **Future:** rollback and freeze protection, key rotation, and never
-  executing downloaded code ([update-security.md](update-security.md)).
+* **Current:** partial. There is no update mechanism. Signed bundles give
+  rollback, freeze and mix-and-match protection, and keyrings give
+  revocation and rotation (T6).
+* **Future:** an automatic updater (TUF: threshold signatures, role
+  separation), never executing downloaded code
+  ([update-security.md](update-security.md)).
 
 ### T8: Unauthorised GUI or CLI-to-service requests
 
-* **Current:** not applicable, because there is no service or IPC.
-* **Future:** local-only transport (Unix socket / named pipe) with OS-level
-  peer authentication and an explicit authorisation matrix; no TCP
-  listener ([privilege-model.md](privilege-model.md)).
+* **Current (Linux):** mitigated. Unix socket only, no network listener.
+  * The peer uid comes from the kernel (`SO_PEERCRED`).
+  * Every request is validated (version, unknown operations and fields,
+    absolute paths, sizes checked before allocation) and authorised against
+    the matrix in [privilege-model.md](privilege-model.md).
+  * Other users' jobs are reported as not found.
+  * Scans for non-administrators run as the caller, so the service cannot
+    be used to read files the caller could not read.
+  * Connections are bounded (64, 1,000 requests each, 30-second timeouts)
+    and the job queue is bounded. The decoder is fuzzed.
+* **Residual:** any local user can queue scans up to the queue limit (a
+  local denial of service on scanning; use `socket_group` to restrict who
+  can connect). Windows transport pending (Phase 8).
 
 ### T9: Privilege escalation through the product
 
@@ -149,8 +181,15 @@ residual risk).
   with `--output` go via a temp file plus atomic rename (mode 0600 on Unix), so
   an existing symlink at the destination is replaced rather than written
   through.
-* **Future:** the service is the only privileged component; see the
-  privilege model.
+* **Current (service):** the service is the only privileged component.
+  * Its configuration and scanner binary must be root-owned and not
+    writable by others, or it refuses to start.
+  * Children are started through `setpriv` with a minimal environment and
+    reduced identity. Paths are passed after `--`, so they can never be read
+    as options.
+  * Remediation happens only in the service, after the report is read.
+  * The systemd unit adds a capability bounding set, `NoNewPrivileges` and a
+    system-call filter.
 
 ### T10: Quarantine tampering and remediation attacks
 
@@ -179,9 +218,10 @@ residual risk).
 
 * **Current:** partial. `ScanConfig` is validated and deserialises with
   `deny_unknown_fields`. Configuration comes only from CLI arguments today.
-* **Future:** service configuration is root/SYSTEM-owned. Changes go through
-  the authorised IPC and are audit-logged. Unsafe values (e.g. disabling
-  scanning of a path) are logged prominently.
+* **Current (service):** the service configuration must be root-owned and
+  not group- or world-writable, rejects unknown fields and invalid values,
+  and cannot be changed over IPC.
+* **Future:** configuration changes over the authorised IPC, audit-logged.
 
 ### T12: Resource exhaustion
 
@@ -199,9 +239,13 @@ residual risk).
     each detector, and inside YARA-X.
   * Content buffered for YARA only up to `max_content_size` (64 MiB), so
     worst-case buffer memory is bounded by `workers × 64 MiB`.
-* **Partial:** a single blocking `read(2)` on a hung network or FUSE
-  filesystem cannot be interrupted, so it can stall a worker beyond the limit.
-  There is no whole-scan time budget.
+  * Watchdog: a worker stuck on one file (blocked read, or a detector ignoring
+    its deadline) for more than the per-file limit + 2 s is abandoned and
+    replaced, and the file is reported. The scan always finishes
+    ([ADR-0009](../architecture/decisions/0009-stall-watchdog.md)).
+  * Optional whole-scan time limit (`--scan-timeout`).
+* **Partial:** an abandoned thread keeps its buffer and file descriptor until
+  its blocked call returns (at most `workers` replacements per scan).
 
 ### T13: False positives and unsafe remediation
 
@@ -217,22 +261,41 @@ residual risk).
 ### T14: Compromised host visibility (rootkits)
 
 * **Accepted:** a scanner running inside a compromised OS sees what the
-  kernel shows it. Kernel rootkits can hide files and processes from 0.1.0
-  completely. **Future:** cross-view checks raise the attacker's cost but
-  cannot defeat a determined kernel-level adversary. Offline scanning from
-  trusted media is the real mitigation. The product must say this and not
-  claim otherwise.
+  kernel shows it. Kernel rootkits can hide files and processes completely.
+* **Current (Linux):** `system-check` cross-checks kernel modules
+  (`/proc/modules` against `/sys/module`), sweeps every PID for processes
+  missing from the `/proc` listing, reads taint flags, and verifies critical
+  files with the package manager
+  ([ADR-0015](../architecture/decisions/0015-system-checks.md)). These raise
+  the cost for careless user-mode and kernel rootkits. The scanner also checks
+  its own process for injected libraries (AW-SYS-019), which exposes
+  user-mode rootkits even when they hide `/etc/ld.so.preload`, and it hashes
+  package files itself rather than trusting `rpm`/`dpkg` to read them. They cannot defeat a
+  determined kernel-level adversary, and every report says so.
+* **Mitigation:** offline inspection from trusted media (`scan` and
+  `system-check --root` on the unmounted disk). `--root` reads are confined
+  to the image with `openat2(RESOLVE_IN_ROOT)`, so a hostile image's links
+  cannot redirect reads to the host.
+* **Residual:** the package database (and the host's `rpm` reading it) is
+  trusted; configuration files are untrusted input (bounded, parsed without
+  executing anything; output sanitised).
 
 ### T15: Tampering with logs or detection evidence
 
 * **Current:** partial.
   * Scan reports are written atomically but are ordinary user-owned files.
-  * Remediation actions go to a hash-chained audit log that detects edits,
+    * Remediation actions go to a hash-chained audit log that detects edits,
     removals and reordering; the store refuses to open when the chain is
     broken.
-  * An attacker able to rewrite the whole log can forge a consistent chain.
-* **Future:** anchor the head hash externally (syslog / Windows Event Log /
-  remote collector); service-owned log.
+  * Each entry's hash is anchored in the system log (syslog/journald), which
+    unprivileged users cannot rewrite, so a forged but self-consistent local
+    chain no longer matches its anchors.
+  * The service compares the chain with the journal automatically (every
+    `audit_check_hours`, and on request), using only anchors journald
+    attributes to the service's uid and to this chain's identifier, and logs
+    `AUDIT LOG CHECK FAILED` on a mismatch.
+  * Residual: root can alter both the log and the journal.
+* **Future:** remote log forwarding; Windows Event Log.
 
 ### T16: Output injection via hostile names
 

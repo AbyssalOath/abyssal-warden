@@ -1,0 +1,10 @@
+# Pinned so a new Rust release (with new Clippy lints) cannot break CI or
+# local builds without a code change. Update deliberately: bump the version,
+# fix any new lints, and update the CI workflow comment that references it.
+#
+# The minimum supported version (`rust-version` in Cargo.toml, currently 1.93)
+# is checked separately by the `msrv` CI job, which overrides this file.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -51,7 +51,7 @@ the future service and GUI.
 
 * Content-based detectors need a content accessor on `FileObservation`,
   designed together with the YARA integration
-  ([detection-pipeline.md](../detection-pipeline.md#planned-content-access)).
+  ([detection-pipeline.md](../detection-pipeline.md#content-access-per-worker-state-and-time-limits)).
 * Non-file targets (processes, registry, services) need new `FindingTarget`
   variants and probably a separate `inspect_*` entry point. The current trait
   is file-scoped by design.

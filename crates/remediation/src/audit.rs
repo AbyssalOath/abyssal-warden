@@ -28,6 +28,9 @@ pub struct AuditEntry {
     #[serde(with = "time::serde::rfc3339")]
     pub time: OffsetDateTime,
     pub actor_uid: u32,
+    /// The user a service performed the action for (IPC caller).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<u32>,
     /// `quarantine`, `restore`, `delete`, `recover`.
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,6 +62,8 @@ pub enum AuditError {
 pub(crate) struct ChainHead {
     pub(crate) seq: u64,
     pub(crate) hash: String,
+    /// Hash of the first entry, which identifies the chain.
+    pub(crate) first: Option<String>,
 }
 
 impl ChainHead {
@@ -66,8 +71,21 @@ impl ChainHead {
         Self {
             seq: 0,
             hash: GENESIS.to_owned(),
+            first: None,
         }
     }
+
+    /// The chain's identifier (see [`chain_id`]), once it has an entry.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn chain_id(&self) -> Option<String> {
+        self.first.as_deref().map(chain_id)
+    }
+}
+
+/// Identifies an audit chain in anchors: the first 16 hex digits of the
+/// hash of its first entry. A chain rewritten from the start gets a new id.
+pub fn chain_id(first_entry_hash: &str) -> String {
+    first_entry_hash.chars().take(16).collect()
 }
 
 pub(crate) fn line_hash(line: &[u8]) -> String {
@@ -85,9 +103,11 @@ pub(crate) fn encode(
     entry.seq = head.seq + 1;
     entry.prev = head.hash.clone();
     let mut line = serde_json::to_vec(&entry)?;
+    let hash = line_hash(&line);
     let new_head = ChainHead {
         seq: entry.seq,
-        hash: line_hash(&line),
+        first: head.first.clone().or_else(|| Some(hash.clone())),
+        hash,
     };
     line.push(b'\n');
     Ok((line, new_head))
@@ -98,7 +118,21 @@ pub fn verify_audit_log<R: Read>(reader: R) -> Result<u64, AuditError> {
     verify_chain(reader).map(|h| h.seq)
 }
 
+/// Verify the whole chain and return every entry's sequence number and hash.
+pub fn audit_chain<R: Read>(reader: R) -> Result<Vec<(u64, String)>, AuditError> {
+    let mut out = Vec::new();
+    walk_chain(reader, |seq, hash| out.push((seq, hash.to_owned())))?;
+    Ok(out)
+}
+
 pub(crate) fn verify_chain<R: Read>(reader: R) -> Result<ChainHead, AuditError> {
+    walk_chain(reader, |_, _| {})
+}
+
+fn walk_chain<R: Read>(
+    reader: R,
+    mut on_entry: impl FnMut(u64, &str),
+) -> Result<ChainHead, AuditError> {
     let mut head = ChainHead::genesis();
     let mut reader = BufReader::new(reader);
     let mut line = Vec::new();
@@ -133,9 +167,12 @@ pub(crate) fn verify_chain<R: Read>(reader: R) -> Result<ChainHead, AuditError> 
                 "hash chain mismatch (a previous line was altered or removed)".into(),
             ));
         }
+        let hash = line_hash(&line);
+        on_entry(lineno, &hash);
         head = ChainHead {
             seq: lineno,
-            hash: line_hash(&line),
+            first: head.first.or_else(|| Some(hash.clone())),
+            hash,
         };
     }
 }
@@ -149,6 +186,7 @@ mod tests {
             seq: 0,
             time: OffsetDateTime::UNIX_EPOCH,
             actor_uid: 1000,
+            on_behalf_of: None,
             action: action.into(),
             item: None,
             path: None,

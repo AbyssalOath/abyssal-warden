@@ -11,7 +11,8 @@ use std::fmt::Write as _;
 use serde::Serialize;
 use time::format_description::well_known::Rfc3339;
 use warden_core::{
-    Finding, FindingTarget, ObservedPath, RemediationStatus, ScanReport, ScanStatus,
+    CheckStatus, Finding, FindingKind, FindingTarget, ObservedPath, RemediationStatus, ScanReport,
+    ScanStatus, SystemReport,
 };
 
 /// Maximum issues/skips listed in human output; JSON output has them all.
@@ -23,10 +24,20 @@ pub(crate) fn sanitize(s: &str) -> String {
     warden_core::text::escape_unsafe_chars(s)
 }
 
-fn path(p: &ObservedPath) -> String {
+pub(crate) fn path(p: &ObservedPath) -> String {
     let mut s = sanitize(&p.text);
     if p.is_lossy() {
         s.push_str("  [name is not valid Unicode; exact bytes are in the JSON report]");
+    }
+    s
+}
+
+/// An archive on disk followed by its member chain: `a.zip > inner.zip > x`.
+fn located(p: &ObservedPath, member: Option<&[ObservedPath]>) -> String {
+    let mut s = path(p);
+    for m in member.unwrap_or_default() {
+        s.push_str(" > ");
+        s.push_str(&path(m));
     }
     s
 }
@@ -106,6 +117,19 @@ fn write_report(o: &mut String, r: &ScanReport, show_skipped: bool) -> std::fmt:
         writeln!(o)?;
     }
 
+    for (i, b) in r.content_bundles.iter().enumerate() {
+        let heading = if i == 0 { "Content:" } else { "" };
+        writeln!(
+            o,
+            "  {heading:<12} bundle \"{}\" sequence {} (signed by key {}, expires {}){}",
+            sanitize(&b.name),
+            b.sequence,
+            sanitize(&b.signers.join(", ")),
+            b.expires.format(&Rfc3339).unwrap_or_default(),
+            if b.expired { " EXPIRED" } else { "" }
+        )?;
+    }
+
     let s = &r.stats;
     writeln!(o)?;
     writeln!(o, "Summary")?;
@@ -115,6 +139,9 @@ fn write_report(o: &mut String, r: &ScanReport, show_skipped: bool) -> std::fmt:
         s.files_scanned,
         human_bytes(s.bytes_scanned)
     )?;
+    if s.archive_members_scanned > 0 {
+        writeln!(o, "  Archive members:      {}", s.archive_members_scanned)?;
+    }
     writeln!(o, "  Directories visited:  {}", s.directories_visited)?;
     write!(o, "  Skipped by policy:    {}", s.entries_skipped)?;
     if !s.skipped_by_reason.is_empty() {
@@ -127,7 +154,20 @@ fn write_report(o: &mut String, r: &ScanReport, show_skipped: bool) -> std::fmt:
     }
     writeln!(o)?;
     writeln!(o, "  Issues:               {}", s.issues)?;
-    writeln!(o, "  Findings:             {}", s.findings)?;
+    let allowed = r
+        .findings
+        .iter()
+        .filter(|f| f.remediation_status == RemediationStatus::Allowed)
+        .count();
+    if allowed > 0 {
+        writeln!(
+            o,
+            "  Findings:             {} ({allowed} allow-listed by you)",
+            s.findings
+        )?;
+    } else {
+        writeln!(o, "  Findings:             {}", s.findings)?;
+    }
 
     if !r.findings.is_empty() {
         writeln!(o)?;
@@ -148,7 +188,11 @@ fn write_report(o: &mut String, r: &ScanReport, show_skipped: bool) -> std::fmt:
         writeln!(o)?;
         writeln!(o, "Issues{}", list_suffix(r.issues.len(), s.issues))?;
         for issue in r.issues.iter().take(LIST_LIMIT) {
-            let p = issue.path.as_ref().map(path).unwrap_or_default();
+            let p = issue
+                .path
+                .as_ref()
+                .map(|p| located(p, issue.member.as_deref()))
+                .unwrap_or_default();
             write!(o, "  {:<18} {p}", label(&issue.kind))?;
             if let Some(d) = &issue.detector {
                 write!(o, " [detector {}]", sanitize(d))?;
@@ -165,7 +209,12 @@ fn write_report(o: &mut String, r: &ScanReport, show_skipped: bool) -> std::fmt:
             list_suffix(r.skipped.len(), s.entries_skipped)
         )?;
         for sk in r.skipped.iter().take(LIST_LIMIT) {
-            writeln!(o, "  {:<24} {}", label(&sk.reason), path(&sk.path))?;
+            writeln!(
+                o,
+                "  {:<28} {}",
+                label(&sk.reason),
+                located(&sk.path, sk.member.as_deref())
+            )?;
         }
     }
 
@@ -197,7 +246,13 @@ fn write_report(o: &mut String, r: &ScanReport, show_skipped: bool) -> std::fmt:
             .iter()
             .filter(|f| f.remediation_status == RemediationStatus::Quarantined)
             .count();
-        if quarantined == 0 {
+        if allowed as u64 == s.findings {
+            writeln!(
+                o,
+                "{} finding(s), all allow-listed (restored by you); not treated as new detections.",
+                s.findings
+            )?;
+        } else if quarantined == 0 {
             writeln!(o, "{} finding(s). No files were modified.", s.findings)?;
         } else {
             writeln!(
@@ -206,6 +261,178 @@ fn write_report(o: &mut String, r: &ScanReport, show_skipped: bool) -> std::fmt:
                 s.findings
             )?;
         }
+    }
+    Ok(())
+}
+
+/// Human-readable system-check report.
+pub(crate) fn render_system(report: &SystemReport, show_inventory: bool) -> String {
+    let mut o = String::new();
+    // Writing to a String cannot fail.
+    let _ = write_system(&mut o, report, show_inventory);
+    o
+}
+
+fn write_system(o: &mut String, r: &SystemReport, show_inventory: bool) -> std::fmt::Result {
+    let h = &r.host;
+    writeln!(o, "Abyssal Warden system check")?;
+    write!(o, "  Root:      {}", path(&h.root))?;
+    writeln!(
+        o,
+        "{}",
+        if h.live {
+            " (running system)"
+        } else {
+            " (offline; kernel and process checks do not apply)"
+        }
+    )?;
+    if let Some(name) = &h.hostname {
+        writeln!(o, "  Host:      {}", sanitize(name))?;
+    }
+    if let Some(k) = &h.kernel {
+        writeln!(o, "  Kernel:    {}", sanitize(k))?;
+    }
+    if let Some(uid) = h.euid {
+        writeln!(
+            o,
+            "  Run as:    uid {uid}{}",
+            if uid == 0 {
+                ""
+            } else {
+                " (not root: coverage is limited)"
+            }
+        )?;
+    }
+    writeln!(
+        o,
+        "  Started:   {}",
+        r.started_at.format(&Rfc3339).unwrap_or_default()
+    )?;
+
+    writeln!(o, "\nChecks:")?;
+    for c in &r.checks {
+        let status = match c.status {
+            CheckStatus::Completed => "ok",
+            CheckStatus::Partial => "PARTIAL",
+            CheckStatus::Skipped => "skipped",
+            CheckStatus::Unsupported => "unsupported",
+            CheckStatus::Failed => "FAILED",
+            _ => "unknown",
+        };
+        write!(
+            o,
+            "  [{status:>11}] {} ({} examined)",
+            sanitize(&c.title),
+            c.examined
+        )?;
+        if let Some(d) = &c.detail {
+            write!(o, ": {}", sanitize(d))?;
+        }
+        writeln!(o)?;
+    }
+
+    let mut findings: Vec<&Finding> = r.findings.iter().collect();
+    findings.sort_by_key(|f| std::cmp::Reverse(f.severity));
+    let (info, review): (Vec<&Finding>, Vec<&Finding>) = findings
+        .into_iter()
+        .partition(|f| f.kind == FindingKind::Informational);
+    if review.is_empty() {
+        writeln!(
+            o,
+            "\nNo suspicious persistence or integrity problems found."
+        )?;
+    } else {
+        writeln!(o, "\nFindings ({}):", review.len())?;
+        for (i, f) in review.iter().enumerate() {
+            write_finding(o, i + 1, f)?;
+        }
+    }
+    if !info.is_empty() {
+        writeln!(o, "\nInformational ({}):", info.len())?;
+        for f in info {
+            let what = f
+                .evidence
+                .first()
+                .map(|e| e.summary.as_str())
+                .unwrap_or_default();
+            writeln!(o, "  - {}: {}", sanitize(&f.name), sanitize(what))?;
+        }
+    }
+
+    if let Some(refs) = &r.referenced_files {
+        writeln!(
+            o,
+            "\nReferenced executables: {} scanned, {} finding(s){}",
+            refs.stats.files_scanned,
+            refs.findings.len(),
+            if refs.status == ScanStatus::Completed {
+                ""
+            } else {
+                " (scan incomplete)"
+            }
+        )?;
+        for (i, f) in refs.findings.iter().enumerate() {
+            write_finding(o, i + 1, f)?;
+        }
+    }
+
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for e in &r.persistence {
+        *counts.entry(label(&e.mechanism)).or_default() += 1;
+    }
+    writeln!(
+        o,
+        "\nPersistence inventory ({} entries):",
+        r.persistence.len()
+    )?;
+    for (m, n) in &counts {
+        writeln!(o, "  {m:<22} {n}")?;
+    }
+    if show_inventory {
+        for e in &r.persistence {
+            write!(
+                o,
+                "  - [{}, {}] {}",
+                label(&e.mechanism),
+                label(&e.scope),
+                path(&e.location)
+            )?;
+            match e.enabled {
+                Some(true) => write!(o, " (enabled)")?,
+                Some(false) => write!(o, " (disabled)")?,
+                None => {}
+            }
+            writeln!(o)?;
+            if let Some(c) = &e.command {
+                writeln!(o, "      runs: {}", sanitize(c))?;
+            }
+            if let Some(d) = &e.detail {
+                writeln!(o, "      {}", sanitize(d))?;
+            }
+        }
+    } else if !r.persistence.is_empty() {
+        writeln!(
+            o,
+            "  (use --show-inventory to list every entry, or --format json)"
+        )?;
+    }
+
+    if !r.issues.is_empty() {
+        writeln!(o, "\nIssues ({}):", r.issues.len())?;
+        for i in r.issues.iter().take(LIST_LIMIT) {
+            let p = i.path.as_ref().map(path).unwrap_or_default();
+            writeln!(o, "  - {p}: {}", sanitize(&i.message))?;
+        }
+        if r.issues.len() > LIST_LIMIT {
+            writeln!(
+                o,
+                "  ... {} more in the JSON report",
+                r.issues.len() - LIST_LIMIT
+            )?;
+        }
+    }
+    for w in &r.warnings {
+        writeln!(o, "\nwarning: {}", sanitize(w))?;
     }
     Ok(())
 }
@@ -219,7 +446,7 @@ fn list_suffix(listed: usize, total: u64) -> String {
     }
 }
 
-fn write_finding(o: &mut String, n: usize, f: &Finding) -> std::fmt::Result {
+pub(crate) fn write_finding(o: &mut String, n: usize, f: &Finding) -> std::fmt::Result {
     writeln!(
         o,
         "  {n}. [{}] {}",
@@ -242,7 +469,43 @@ fn write_finding(o: &mut String, n: usize, f: &Finding) -> std::fmt::Result {
                 writeln!(o, "     SHA-256:      {h}")?;
             }
         }
-        _ => writeln!(o, "     Target:       (not a file; see the JSON report)")?,
+        FindingTarget::ArchiveMember {
+            archive,
+            member,
+            sha256,
+            ..
+        } => {
+            writeln!(o, "     In archive:   {}", located(archive, Some(member)))?;
+            if let Some(h) = sha256 {
+                writeln!(o, "     SHA-256:      {h} (of the member)")?;
+            }
+        }
+        FindingTarget::Persistence {
+            mechanism,
+            location,
+            entry,
+        } => {
+            writeln!(
+                o,
+                "     Persistence:  {} in {}",
+                label(mechanism),
+                path(location)
+            )?;
+            if let Some(e) = entry {
+                writeln!(o, "     Entry:        {}", sanitize(e))?;
+            }
+        }
+        FindingTarget::Process { pid, name, exe } => {
+            write!(o, "     Process:      pid {pid} ({})", sanitize(name))?;
+            if let Some(exe) = exe {
+                write!(o, ", executable {}", path(exe))?;
+            }
+            writeln!(o)?;
+        }
+        FindingTarget::System { component } => {
+            writeln!(o, "     Component:    {}", sanitize(component))?;
+        }
+        _ => writeln!(o, "     Target:       (see the JSON report)")?,
     }
     let src = &f.source;
     write!(

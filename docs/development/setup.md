@@ -2,8 +2,13 @@
 
 ## Toolchain
 
-* Rust **stable**, edition 2024. Developed with rustc 1.97.1. The minimum
-  supported version is not yet defined.
+* Rust, edition 2024. The toolchain is **pinned** in `rust-toolchain.toml`
+  (currently 1.98.0); rustup selects it automatically inside the repository,
+  and CI uses the same version, so a new Rust release cannot break the
+  build. To upgrade: bump the file and the `toolchain:` lines in
+  `.github/workflows/ci.yml`, then fix any new Clippy lints.
+* Minimum supported version: **1.93** (`rust-version` in `Cargo.toml`, bound
+  by YARA-X), checked by the `msrv` CI job with `cargo +1.93.0`.
 * The first build compiles YARA-X and wasmtime (~180 crates, about a minute
   on 16 cores).
 * Quarantine tests need Linux ≥ 5.6 (`openat2`).

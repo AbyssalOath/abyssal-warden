@@ -21,11 +21,24 @@ flowchart LR
     cli["warden-cli<br/>(abyssal-warden binary)"]
     engine["warden-engine<br/>traversal, single-read I/O,<br/>orchestration, hash signatures,<br/>signature verification"]
     yara["warden-yara<br/>YARA-X rules"]
+    heur["warden-heuristics<br/>names, PE/ELF, scripts"]
+    ipc["warden-ipc<br/>protocol, policy"]
+    svc["warden-service<br/>abyssal-wardend"]
     rem["warden-remediation<br/>quarantine store (Linux)"]
+    sys["warden-system<br/>persistence inventory,<br/>integrity checks (Linux)"]
     core["warden-core<br/>types + Detector traits<br/>(no I/O)"]
     cli --> engine
     cli --> yara
     cli --> rem
+    cli --> sys
+    cli --> heur
+    cli --> svc
+    svc --> ipc
+    svc --> rem
+    svc -.->|runs children| cli
+    heur --> core
+    sys --> heur
+    sys --> core
     engine --> core
     yara --> core
     rem --> core
@@ -61,10 +74,13 @@ Everything needed to scan, except content-specific detectors.
 
 | File | What it holds |
 |---|---|
-| `scanner.rs` | `Scanner::scan`: walker thread, bounded work queue, worker threads, aggregation on the caller's thread, panic isolation, per-file deadline, report assembly. The threading diagram is at the top of the file |
-| `fsio.rs` | The hardened single read: no-follow / non-blocking open, type and size re-checked from the handle, SHA-256, optional content buffer, deadline and cancellation per 64 KiB chunk |
+| `scanner.rs` | `Scanner::scan`: walker thread, bounded work queue, worker threads, and the caller's thread as coordinator (aggregation, whole-scan time limit, stall watchdog that abandons stuck workers); panic isolation, per-file deadline, report assembly. The threading diagram is at the top of the file |
+| `fsio.rs` | The hardened single read: symlink-free open (`openat2` on Linux; root-relative `cap-std` open elsewhere, so nothing resolves outside a scan root), non-blocking, `O_NOATIME` where permitted, type and size re-checked from the handle, duplicate-file check, SHA-256, optional content buffer, deadline and cancellation per 64 KiB chunk |
+| `archive.rs` | ZIP expansion in memory: members, nesting, bomb budget, per-member reporting |
 | `signatures.rs` | Hash database format v1 (strict parse and validation) and `HashSignatureDetector` |
-| `trust.rs` | minisign verification of content files (`TrustedKeys`, `load_content`, `SignaturePolicy`) |
+| `trust.rs` | minisign verification (`TrustedKeys`), keyrings with revocation and validity windows, per-file `load_content` |
+| `bundle.rs` | Signed content bundles: manifest format, verification, hash-checked root-relative file loading |
+| `content_state.rs` | Rollback/equivocation state for bundles (locked, atomic) |
 
 ### `crates/yara`: `warden-yara`
 
@@ -83,15 +99,82 @@ The **only** code allowed to move or delete files.
 | `linux/tests.rs` | Store tests, including a simulated crash at each journal step |
 | `record.rs` | `QuarantineRecord` (also the journal entry), `QuarantineId`, `ItemState` |
 | `audit.rs` | Hash-chained JSON Lines audit log and its verifier |
+| `allowlist.rs` | Allow-list of restored contents (exact SHA-256) |
+| `linux/anchor.rs` | Sends each audit entry's hash to syslog/journald |
+| `linux/processes.rs` | Finds processes mapping a file; pause/kill/resume guard |
 | `policy.rs` | Which findings may be quarantined automatically; protected system paths |
 | `lib.rs` | Public API, errors, and the `Unsupported` stub used on non-Linux platforms |
 
-### `crates/cli`: `warden-cli` (binary `abyssal-warden`)
+### `crates/heuristics`: `warden-heuristics`
+
+The `heuristics` detector (`--heuristics`): file names, PE and ELF
+structure (parsed read-only with `object`), scripts and locations. Also
+owns the command-pattern table used by `warden-system`. Details:
+[docs/detection/heuristics.md](docs/detection/heuristics.md),
+[ADR-0017](docs/architecture/decisions/0017-file-heuristics.md).
+
+| File | What it holds |
+|---|---|
+| `lib.rs` | `HeuristicsDetector`, `analyze`, format detection, entropy |
+| `rules.rs` | The `AW-HEU-*` catalogue |
+| `patterns.rs` | Shared command patterns |
+| `names.rs`, `script.rs` | Name and script rules |
+| `pe.rs`, `elf.rs` | Structural analysis |
+| `examples/corpus_eval.rs` | Clean-corpus hit-rate measurement |
+
+### `crates/system`: `warden-system`
+
+Read-only persistence inventory and integrity checks for Linux and Windows
+(`system-check`). Depends only on `warden-core`; the CLI adds content
+scanning of referenced programs. Details:
+[docs/detection/system-checks.md](docs/detection/system-checks.md),
+[ADR-0015](docs/architecture/decisions/0015-system-checks.md).
+
+| File | What it holds |
+|---|---|
+| `lib.rs` | `run_checks`, options, outcome, `host_path`, `correlate` |
+| `fsx.rs` | Root-confined, bounded reads (`openat2(RESOLVE_IN_ROOT)`) |
+| `ctx.rs` | Shared state; applies the rules to each persistence entry |
+| `rules.rs` | The `AW-SYS-*` rule catalogue |
+| `heuristics.rs` | Command patterns, executable extraction, temp/hidden paths |
+| `persistence/` | One module per mechanism (systemd, cron, files, ssh, pam, udev) |
+| `kernel.rs`, `processes.rs` | Module cross-view, taint, hidden PIDs, deleted executables |
+| `packages.rs` | Package verification: native dpkg database reader, rpm digest query; files hashed here |
+| `boot.rs`, `ebpf.rs` | Boot integrity; eBPF program inventory |
+| `tool.rs` | Runs external tools (rpm, bpftool) with a clean environment, timeout and bounded output |
+| `winrules.rs` | Windows rules and parsers (task XML, image paths), tested on every platform |
+| `windows.rs` | Live Windows registry and file reading |
+| `users.rs` | `/etc/passwd` parsing |
+
+### `crates/ipc`: `warden-ipc`
+
+The service protocol: `Request`/`Response`, framing with size limits,
+`Request::validate`, and the authorisation matrix (`policy`). Pure and
+platform-neutral.
+
+### `crates/service`: `warden-service`
+
+The Linux daemon library behind `abyssal-wardend`
+([ADR-0018](docs/architecture/decisions/0018-service-and-ipc.md)).
+
+| File | What it holds |
+|---|---|
+| `lib.rs` | `run`: configuration, checks, threads, shutdown |
+| `server.rs` | Socket, `SO_PEERCRED`, dispatch |
+| `jobs.rs` | Queue, workers, result processing, remediation |
+| `runner.rs` | Children via `setpriv`: identity, capabilities, deadline, process group |
+| `schedule.rs`, `audit.rs` | Schedules; audit-chain comparison with the journal |
+| `store.rs`, `config.rs`, `accounts.rs` | History, configuration, users and groups |
+| `client.rs` | The client used by `abyssal-warden service` |
+
+### `crates/cli`: `warden-cli` (binaries `abyssal-warden`, `abyssal-wardend`)
 
 | File | What it holds |
 |---|---|
 | `main.rs` | Argument parsing, the `scan`/`hash`/`validate` commands, progress line, exit codes, Ctrl-C handling, atomic report writing |
-| `content.rs` | Loading databases and YARA rules: verify the signature, then parse |
+| `content.rs` | Loading content: keyrings, bundles (with rollback state), individually signed files; verify, then parse |
+| `content_cmd.rs` | `content manifest` / `content verify` |
+| `paths.rs` | Default state locations |
 | `output.rs` | Human-readable report; every untrusted string is escaped here |
 | `quarantine.rs` | `quarantine` subcommands and `scan --quarantine` |
 
@@ -100,7 +183,7 @@ The **only** code allowed to move or delete files.
 | Path | What it holds |
 |---|---|
 | `crates/*/tests/` | Integration and black-box tests (see [testing](docs/development/testing.md)) |
-| `fuzz/` | cargo-fuzz targets: `signature-db`, `digest-parse`, `yara-scan`, `audit-log`. Separate workspace, nightly |
+| `fuzz/` | cargo-fuzz targets: `signature-db`, `digest-parse`, `yara-scan`, `audit-log`, `archive-expand`, `system-parsers`, `heuristics`, `ipc-decode`. Separate workspace, nightly |
 | `examples/` | Synthetic test content, signed with a throwaway **test** key |
 | `docs/` | Architecture, security, detection, platform, development and user docs ([index](docs/README.md)) |
 | `deny.toml`, `.cargo/audit.toml` | Dependency policy and accepted advisories |
@@ -108,19 +191,25 @@ The **only** code allowed to move or delete files.
 
 ## How a scan flows
 
-1. **Load content** (`cli/content.rs`). Each database and rule file is read
-   under a size cap, its `.minisig` is checked against `--trusted-key`, and
-   only then is it parsed. Any failure stops the program before scanning.
+1. **Load content** (`cli/content.rs`). Bundles: the manifest signature is
+   verified against the keyrings, expiry and rollback are checked, and each
+   file is hash-checked before parsing (`engine/bundle.rs`). Individually
+   signed files: each `.minisig` is checked. Any failure stops the program
+   before scanning.
 2. **Configure** (`core/config.rs`). `Scanner::new` validates the config.
 3. **Walk** (`engine/scanner.rs`). One walker thread resolves roots,
    applies excludes, the symlink policy and depth limit, and puts regular
-   files on a bounded queue.
+   files on a bounded queue. Meanwhile the calling thread coordinates:
+   whole-scan time limit, cancellation, and a watchdog that abandons and
+   replaces a worker stuck on one file.
 4. **Read once** (`engine/fsio.rs`). A worker opens each file safely,
    hashes it, and keeps the bytes if a detector needs content and the file is
    within `max_content_size`.
 5. **Detect**. Each detector's per-worker state (`Detector::worker`) gets the
    `FileObservation`, inside `catch_unwind`, with the deadline checked
-   before each detector.
+   before each detector. If the file is a ZIP, its members are decompressed
+   in memory (`engine/archive.rs`) and each goes through the same
+   detectors, with its member chain recorded.
 6. **Aggregate**. The caller's thread counts results, applies recording caps,
    calls the progress callback, and builds a sorted `ScanReport`.
 7. **Remediate** (only with `--quarantine`; `cli/quarantine.rs`). Findings
@@ -151,8 +240,11 @@ not just a code review.
   every channel is bounded, every file has a size and time budget. The
   default limits are in `ScanLimits`.
 * **Failures are data, not aborts.** A file that can't be read, or a detector
-  that errors or panics, becomes a `ScanIssue`; the scan continues. A report
-  always distinguishes "nothing found" from "not checked".
+  that errors, panics or hangs, becomes a `ScanIssue`; the scan continues.
+  A report always distinguishes "nothing found" from "not checked".
+* **Every scan finishes, and every file is accounted for.** No file can hang
+  a scan (watchdog), and queued work that was never scanned is reported, never
+  counted as completed ([ADR-0009](docs/architecture/decisions/0009-stall-watchdog.md)).
 * **No `unsafe`.** `unsafe_code = "forbid"` applies to the whole workspace.
   Release builds keep `panic = "unwind"` so detector panics can be isolated.
 * **The JSON report is the compatibility contract**, versioned by
@@ -204,6 +296,6 @@ has none. See [docs/platform/](docs/platform/linux.md).
 ## Not built yet
 
 The background service, authenticated IPC, GUI, real-time protection,
-rootkit/persistence checks, archive scanning and an update mechanism are
+Windows persistence checks, persistence cleanup and an update mechanism are
 designed or researched but not implemented. See [ROADMAP.md](ROADMAP.md) and
 [known limitations](docs/known-limitations.md).

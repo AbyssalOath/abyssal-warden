@@ -305,7 +305,8 @@ fn truncate(s: &str, max_chars: usize) -> String {
 #[derive(Debug)]
 pub struct HashSignatureDetector {
     db: HashSignatureDatabase,
-    signer: Option<KeyId>,
+    /// Key ID(s) that verified the database, comma-separated.
+    signer: Option<String>,
 }
 
 impl HashSignatureDetector {
@@ -318,9 +319,16 @@ impl HashSignatureDetector {
     /// A detector for a database whose signature was verified by `signer`
     /// (see [`crate::trust::load_content`]).
     pub fn verified(db: HashSignatureDatabase, signer: KeyId) -> Self {
+        Self::verified_by(db, &[signer])
+    }
+
+    /// A detector for a database verified by several keys (a bundle
+    /// manifest signed to a threshold).
+    pub fn verified_by(db: HashSignatureDatabase, signers: &[KeyId]) -> Self {
+        let label: Vec<String> = signers.iter().map(ToString::to_string).collect();
         Self {
             db,
-            signer: Some(signer),
+            signer: (!label.is_empty()).then(|| label.join(",")),
         }
     }
 
@@ -338,7 +346,7 @@ impl Detector for HashSignatureDetector {
                 name: self.db.meta.name.clone(),
                 version: self.db.meta.version.clone(),
                 entries: self.db.len() as u64,
-                signer: self.signer.map(|k| k.to_string()),
+                signer: self.signer.clone(),
             }),
         }
     }
@@ -547,6 +555,7 @@ mod tests {
             metadata: &meta,
             content: None,
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            member: None,
         };
         let findings = det.inspect_file(&obs).unwrap();
         assert_eq!(findings.len(), 1);

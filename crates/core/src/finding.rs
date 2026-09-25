@@ -118,6 +118,11 @@ pub enum RemediationStatus {
     /// Remediation was attempted and failed; the original file is left in
     /// place and the detail holds the error.
     Failed,
+    /// The file's exact content (SHA-256) is on the user's allow-list,
+    /// normally because they restored it from quarantine. The finding is
+    /// still reported; it is not remediated and does not count as a new
+    /// detection for the exit status.
+    Allowed,
 }
 
 /// The detector, rule and database that produced a finding.
@@ -141,6 +146,28 @@ pub struct DetectionSource {
 pub enum EvidenceKind {
     ExactSha256Match,
     YaraRuleMatch,
+    /// A command line or script matched a suspicious pattern.
+    SuspiciousCommand,
+    /// A file lives in a location associated with abuse (temporary,
+    /// world-writable, hidden).
+    SuspiciousLocation,
+    /// Ownership or permissions let less-privileged users change something
+    /// privileged.
+    InsecurePermissions,
+    /// Two views of the same kernel state disagree.
+    CrossViewMismatch,
+    /// Kernel taint flags.
+    KernelTaint,
+    /// A file differs from what its package manager installed.
+    PackageVerification,
+    /// A process runs an executable that has been deleted.
+    DeletedExecutable,
+    /// A related file was detected by a content detector.
+    DetectedContent,
+    /// A persistence mechanism is configured.
+    PersistenceEntry,
+    /// A structural or textual heuristic observation about a file.
+    Heuristic,
 }
 
 /// One piece of evidence supporting a finding, with a human-readable summary.
@@ -177,12 +204,51 @@ pub enum FindingTarget {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<FileMetadata>,
     },
+    /// A file inside an archive. `archive` is the file on disk; `member`
+    /// lists member names from the outermost archive inward. Member names
+    /// are untrusted and were never used as filesystem paths.
+    ArchiveMember {
+        archive: ObservedPath,
+        member: Vec<ObservedPath>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<Sha256Digest>,
+        size: u64,
+    },
+    /// A persistence entry: `location` is the file that defines it (unit,
+    /// crontab, profile, ...), `entry` the relevant line or command.
+    Persistence {
+        mechanism: crate::PersistenceMechanism,
+        location: ObservedPath,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        entry: Option<String>,
+    },
+    /// A running process.
+    Process {
+        pid: u32,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exe: Option<ObservedPath>,
+    },
+    /// A system component (e.g. `kernel`, a kernel module, a package).
+    System { component: String },
 }
 
 impl FindingTarget {
+    /// The file on disk the finding concerns (the archive, for members).
     pub fn path(&self) -> Option<&ObservedPath> {
         match self {
+            Self::Persistence { location, .. } => Some(location),
+            Self::Process { exe, .. } => exe.as_ref(),
+            Self::System { .. } => None,
             Self::File { path, .. } => Some(path),
+            Self::ArchiveMember { archive, .. } => Some(archive),
+        }
+    }
+
+    pub fn sha256(&self) -> Option<&Sha256Digest> {
+        match self {
+            Self::File { sha256, .. } | Self::ArchiveMember { sha256, .. } => sha256.as_ref(),
+            Self::Persistence { .. } | Self::Process { .. } | Self::System { .. } => None,
         }
     }
 }

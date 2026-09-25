@@ -3,6 +3,10 @@
 #
 # Third-party actions are pinned to full commit SHAs; the trailing comment
 # records the tag the SHA was resolved from. Update them deliberately.
+#
+# The Rust toolchain is pinned in rust-toolchain.toml; `toolchain:` below must
+# match it. rust-toolchain.toml takes precedence over the toolchain an action
+# installs, so jobs that need a different one (msrv, fuzz) use `cargo +<ver>`.
 name: CI
 
 on:
@@ -33,7 +37,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
-          toolchain: stable
+          toolchain: "1.98.0"
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -50,7 +54,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
-          toolchain: stable
+          toolchain: "1.98.0"
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo check --workspace --all-targets --locked
@@ -69,12 +73,29 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
-          toolchain: stable
+          toolchain: "1.98.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Unit, integration (crates/*/tests) and CLI black-box tests.
       # --no-fail-fast: report failures from every test binary, not just the first.
       - run: cargo test --workspace --all-targets --locked --no-fail-fast
       - run: cargo test --workspace --doc --locked
+
+  msrv:
+    name: MSRV (Rust 1.93)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          # Keep in sync with `rust-version` in Cargo.toml.
+          toolchain: "1.93.0"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # `+1.93.0` overrides rust-toolchain.toml, which would otherwise select
+      # the pinned (newer) toolchain and make this job meaningless.
+      - run: cargo +1.93.0 --version
+      - run: cargo +1.93.0 test --workspace --all-targets --locked --no-fail-fast
 
   docs:
     name: rustdoc
@@ -87,7 +108,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
-          toolchain: stable
+          toolchain: "1.98.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo doc --workspace --no-deps --locked
 
@@ -114,4 +135,4 @@ jobs:
           toolchain: nightly
       # Build only: keeps the harnesses compiling. Fuzzing campaigns are run
       # separately (docs/development/testing.md).
-      - run: cargo check --manifest-path fuzz/Cargo.toml
+      - run: cargo +nightly check --manifest-path fuzz/Cargo.toml

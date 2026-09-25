@@ -10,13 +10,16 @@ interface. Matching a diagram is not a reason.
 ## Current crates
 
 ```text
-warden-cli ─┬─► warden-engine ──────┐
-            ├─► warden-yara ────────┼─► warden-core
-            └─► warden-remediation ─┘
+warden-cli ─┬─► warden-engine ───────────────┐
+            ├─► warden-yara ─────────────────┤
+            ├─► warden-heuristics ───────────┤
+            ├─► warden-remediation ──────────┼─► warden-core
+            └─► warden-system ─► (heuristics)┘
 ```
 
-The engine, YARA provider and remediation crates depend only on
-`warden-core`, not on each other. The CLI composes them.
+The engine, YARA, heuristics and remediation crates depend only on
+`warden-core`, not on each other. `warden-system` also uses the heuristics
+crate's command-pattern table. The CLI composes them.
 
 ### `warden-core` (library)
 
@@ -45,7 +48,7 @@ The engine, YARA provider and remediation crates depend only on
   display, report rendering and sanitisation, exit codes, Ctrl-C handling,
   quarantine commands.
 * **Dependencies:** warden-core, warden-engine, warden-yara,
-  warden-remediation, clap, ctrlc, serde, serde_json, tempfile, time.
+  warden-remediation, warden-system, clap, ctrlc, serde, serde_json, tempfile, time.
 
 ### `warden-yara` (library)
 
@@ -64,6 +67,45 @@ The engine, YARA provider and remediation crates depend only on
 * **Why separate:** it is the only code allowed to move or delete files
   ([ADR-0008](decisions/0008-quarantine-store.md)). Nothing in the detection
   path depends on it.
+
+### `warden-ipc` (library)
+
+* **Contains:** the service protocol, framing, validation and the
+  authorisation policy.
+* **Dependencies:** serde, serde_json, thiserror, time, uuid.
+* **Why separate:** client and server (and future GUI and Windows service)
+  share one definition of the trust boundary; it is pure and fuzzed.
+
+### `warden-service` (library; binary `abyssal-wardend` in warden-cli)
+
+* **Contains:** the Linux daemon: socket server, jobs, schedules, history,
+  child processes with reduced privileges, audit comparison.
+* **Dependencies:** warden-core, warden-ipc, warden-remediation, serde_json,
+  tempfile, time, uuid; rustix and ctrlc (Linux).
+* **Why separate:** it is the only long-running privileged component
+  ([ADR-0018](decisions/0018-service-and-ipc.md)). It never parses scanned
+  content itself; it runs `abyssal-warden` children.
+
+### `warden-heuristics` (library)
+
+* **Contains:** the `heuristics` detector (names, PE, ELF, scripts,
+  location) and the shared command-pattern table.
+* **Dependencies:** warden-core, object (read-only ELF/PE), regex, memchr,
+  time.
+* **Why separate:** it holds the untrusted binary parser and can be
+  enabled, versioned and fuzzed on its own
+  ([ADR-0017](decisions/0017-file-heuristics.md)).
+
+### `warden-system` (library)
+
+* **Contains:** persistence inventory, `AW-SYS-*` rules, kernel, process
+  and package checks (Linux), root-confined reads.
+* **Dependencies:** warden-core, warden-heuristics (patterns), md-5, sha2,
+  serde_json, thiserror, time; rustix and libc (Linux); winreg (Windows).
+* **Why separate:** it inspects system state rather than files, runs
+  external tools (rpm/dpkg), and will need different privileges in the
+  service. It stays read-only
+  ([ADR-0015](decisions/0015-system-checks.md)).
 
 ## Planned crates and the reason for each
 

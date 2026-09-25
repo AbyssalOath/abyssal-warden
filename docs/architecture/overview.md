@@ -33,8 +33,8 @@ flowchart LR
 | `warden-yara` | YARA-X rules: compile, validate metadata, scan content | implemented |
 | `warden-remediation` | Quarantine, restore, delete, crash recovery, audit log | implemented (Linux only) |
 | `warden-cli` | Arguments, content loading, progress, rendering, exit codes, quarantine commands | implemented |
-| Service | Scheduling, IPC, privileged operations | [designed](../security/privilege-model.md), not implemented |
-| Platform checks | Persistence, rootkit, integrity | [researched](../platform/), not implemented |
+| `warden-service`, `warden-ipc` | Scheduling, IPC, privileged operations | implemented (Linux; [ADR-0018](decisions/0018-service-and-ipc.md)) |
+| `warden-system` | Persistence inventory, rootkit and integrity checks | implemented (Linux only) |
 | GUI | Desktop front end | [evaluated](gui.md), not implemented |
 
 ## Data flow of a scan
@@ -45,8 +45,10 @@ flowchart LR
    reduced detector set).
 2. The CLI builds a `ScanConfig`; `Scanner::new` validates it.
 3. `Scanner::scan` resolves roots (canonicalises, de-duplicates nested roots)
-   and excludes, then starts one walker thread and N worker threads inside a
-   `std::thread::scope`.
+   and excludes, then starts one walker thread and N worker threads. The
+   calling thread becomes the coordinator: it enforces the whole-scan time
+   limit and runs the stall watchdog
+   ([ADR-0009](decisions/0009-stall-watchdog.md)).
 4. The walker enumerates entries with `walkdir`, applying excludes, the
    symlink policy, the depth limit and the same-filesystem option. Regular
    files go to a **bounded** work queue; directories, skips and walk errors go

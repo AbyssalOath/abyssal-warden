@@ -3,6 +3,7 @@ name = "warden-engine"
 description = "Abyssal Warden scan engine: traversal, hashing, orchestration and built-in detectors"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
@@ -17,11 +18,21 @@ time.workspace = true
 uuid.workspace = true
 walkdir.workspace = true
 minisign-verify = "0.2"
+cap-std = "4.0"
+cap-fs-ext = "4.0"
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs", "deflate64"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+winapi-util = "0.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1", features = ["fs"] }
+
 [dev-dependencies]
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 minisign = "0.9"
 tempfile.workspace = true
 

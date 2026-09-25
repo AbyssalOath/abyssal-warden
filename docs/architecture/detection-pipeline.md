@@ -86,6 +86,7 @@ reader can tell "nothing found" from "not checked".
 |---|---|---|---|
 | Exact SHA-256 signatures | `hash-signatures` | `known_indicator` / `confirmed` | [signatures.md](../detection/signatures.md) |
 | YARA rules (YARA-X) | `yara-x` | per rule metadata; never `confirmed` | [yara.md](../detection/yara.md) |
+| File heuristics (`--heuristics`) | `heuristics` | `heuristic` / `suspicious`, `low` or `medium` | [heuristics.md](../detection/heuristics.md) |
 
 ## Content access, per-worker state and time limits
 

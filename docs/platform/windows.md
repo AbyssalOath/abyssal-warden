@@ -5,11 +5,13 @@
 | Capability | Status |
 |---|---|
 | On-demand scanning, hashing, hash signatures | Implemented. Compiles and passes Clippy for `x86_64-pc-windows-gnu`. CI runs the test suite on `windows-latest` (MSVC) |
-| Hardened open | `FILE_FLAG_OPEN_REPARSE_POINT` under the `skip` policy, so a symlink or junction at the final component is opened as itself and then skipped |
+| Hardened open | Under the `skip` policy, files are opened relative to a handle on their scan root (`cap-std`), one component at a time; nothing can resolve outside the root, and a final-component symlink or junction is opened as itself and skipped ([ADR-0010](../architecture/decisions/0010-root-relative-opens.md)) |
+| Duplicate files (`--follow-symlinks`) | De-duplicated by volume serial number and file index (`GetFileInformationByHandle`) |
 | Paths | Roots are canonicalised to verbatim form (`\\?\C:\...`), which appears in reports. Non-Unicode (unpaired-surrogate) names are preserved as UTF-16LE hex in `raw_hex` |
 | Default excludes | None |
 | YARA rules | Implemented; compiles and passes Clippy for Windows (YARA-X supports Windows), not yet run there |
 | Quarantine | **Not supported**: returns "not supported". Needs a DACL-hardened store under `%ProgramData%` and by-handle move/delete (`FILE_FLAG_OPEN_REPARSE_POINT`, `SetFileInformationByHandle`) |
+| System check (`system-check`) | Implemented for the live system: Run keys, Winlogon, AppInit_DLLs, Image File Execution Options, services and drivers, scheduled tasks, Startup folders ([system-checks.md](../detection/system-checks.md#windows-checks)). Rules unit-tested on every platform; the registry and file layer runs in Windows CI |
 | Everything below | Not implemented |
 
 **Not verified yet:** the test suite has not been *run* on Windows by the

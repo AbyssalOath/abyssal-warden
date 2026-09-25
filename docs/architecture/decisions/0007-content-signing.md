@@ -1,6 +1,6 @@
 # ADR-0007: Signed detection content
 
-* **Status:** Accepted
+* **Status:** Accepted; extended by [ADR-0012](0012-content-bundles.md) (bundles, keyrings, rollback and expiry)
 * **Date:** 2026-09-24
 
 ## Context

@@ -21,10 +21,11 @@ mod digest;
 mod finding;
 mod path;
 mod report;
+mod system;
 pub mod text;
 
 pub use cancel::CancellationToken;
-pub use config::{ConfigError, ScanConfig, ScanLimits, SymlinkPolicy};
+pub use config::{ArchiveLimits, ConfigError, ScanConfig, ScanLimits, SymlinkPolicy};
 pub use detector::{
     DatabaseInfo, Detector, DetectorError, DetectorInfo, DetectorRequirements, DetectorWorker,
     FileObservation,
@@ -36,6 +37,10 @@ pub use finding::{
 };
 pub use path::ObservedPath;
 pub use report::{
-    EngineInfo, IssueKind, REPORT_SCHEMA_VERSION, ScanIssue, ScanReport, ScanSettings, ScanStats,
-    ScanStatus, SkipReason, SkippedEntry, Truncation,
+    ContentBundleInfo, EngineInfo, IssueKind, REPORT_SCHEMA_VERSION, ScanIssue, ScanReport,
+    ScanSettings, ScanStats, ScanStatus, SkipReason, SkippedEntry, Truncation,
+};
+pub use system::{
+    CheckResult, CheckStatus, HostInfo, PersistenceEntry, PersistenceMechanism, PersistenceScope,
+    SYSTEM_REPORT_SCHEMA_VERSION, SystemReport,
 };

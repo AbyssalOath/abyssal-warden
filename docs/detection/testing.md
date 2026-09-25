@@ -48,7 +48,7 @@ A detection or false-positive figure may be published only together with:
 |---|---|
 | Hash matching correctness | Unit and integration tests with synthetic indicators |
 | Traversal and hardening | Integration tests (symlinks, loops, FIFOs, permissions, hostile names, limits) |
-| Parser robustness | Fuzzing with ASan, 2026-09-24, no crashes: signature DB parser 8.3M + 8.1M executions (2 × 60s); digest parser 56M / 60s; audit-log verifier 8.8M / 90s; YARA-X with all enabled format modules ~104k inputs / 7 min |
+| Parser robustness | Fuzzing with ASan, 2026-09-24, no crashes: signature DB parser 8.3M + 8.1M executions (2 × 60s); digest parser 56M / 60s; audit-log verifier 8.8M / 90s; YARA-X with all enabled format modules ~104k inputs / 7 min; archive expander (ZIP parser and decompressors) 1.8M inputs / 5 min |
 | YARA scanner reuse | 500 rules, 4 KiB input: create ~226 µs vs scan ~4.5 µs (`crates/yara/examples/scanner_cost.rs`) |
 | Throughput and memory | Informal, `/usr/share`, 46,423 files / 659 MiB, warm cache, NVMe, 8 workers: hash only 0.95s / 4 MB peak RSS; hash + YARA (content buffered) 1.12s / 72 MB peak RSS |
 | Real-world detection rate | **Not measured** |

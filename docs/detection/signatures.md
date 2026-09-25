@@ -103,10 +103,10 @@ abyssal-warden signatures validate --trusted-key project.pub db.json
   report as `detectors[].database.signer`; reports warn about unsigned
   content.
 * The example content is signed with a throwaway test key
-  (`examples/keys/synthetic-test.pub`, key ID `4B646D33D8084FE3`). Its secret
+  (`examples/keys/synthetic-test.pub`, key ID `70EF691BC71E4DD9`). Its secret
   key was discarded. **Never trust this key outside testing.** Editing an
   example file invalidates its signature.
 
-**Not provided yet:** rollback protection (an older, validly signed
-database is accepted), expiry, key rotation. See
-[update-security.md](../security/update-security.md).
+Individually signed files have **no** rollback or expiry protection.
+Distribute databases inside a **signed content bundle** instead, which adds
+both: see [content-trust.md](../security/content-trust.md).

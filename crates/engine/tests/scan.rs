@@ -642,3 +642,321 @@ fn per_file_time_limit_stops_remaining_detectors() {
     assert!(report.issues[0].message.contains("after"));
     assert!(!report.is_complete());
 }
+
+/// Sleeps (ignoring its deadline) on files whose name starts with "stuck",
+/// simulating a read blocked on a hung filesystem or a runaway detector.
+struct Staller {
+    on_stuck: std::time::Duration,
+    on_other: std::time::Duration,
+}
+
+impl Detector for Staller {
+    fn info(&self) -> DetectorInfo {
+        DetectorInfo {
+            id: "staller".into(),
+            version: "0".into(),
+            database: None,
+        }
+    }
+
+    fn inspect_file(&self, file: &FileObservation<'_>) -> Result<Vec<Finding>, DetectorError> {
+        let stuck = file
+            .path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("stuck"));
+        std::thread::sleep(if stuck { self.on_stuck } else { self.on_other });
+        Ok(Vec::new())
+    }
+}
+
+#[test]
+fn stalled_file_is_abandoned_and_scan_finishes() {
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("stuck-file"), b"s");
+    for i in 0..20 {
+        write(&dir.path().join(format!("ok{i}")), b"o");
+    }
+    let mut c = config(dir.path());
+    c.workers = 1;
+    c.limits.file_timeout_ms = 100;
+    let started = std::time::Instant::now();
+    let report = scan_with(
+        c,
+        vec![Box::new(Staller {
+            on_stuck: std::time::Duration::from_secs(30),
+            on_other: std::time::Duration::ZERO,
+        })],
+    );
+    let took = started.elapsed();
+
+    assert!(took < std::time::Duration::from_secs(10), "took {took:?}");
+    assert_eq!(report.status, ScanStatus::Completed);
+    // The replacement worker scanned everything else.
+    assert_eq!(report.stats.files_scanned, 20);
+    assert_eq!(report.issues.len(), 1, "{:?}", report.issues);
+    assert_eq!(report.issues[0].kind, IssueKind::Timeout);
+    assert!(
+        report.issues[0]
+            .path
+            .as_ref()
+            .unwrap()
+            .text
+            .ends_with("stuck-file")
+    );
+    assert!(report.issues[0].message.contains("abandoned"));
+    assert!(report.warnings.iter().any(|w| w.contains("abandoned")));
+}
+
+#[test]
+fn scan_stops_when_every_worker_is_stalled() {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..5 {
+        write(&dir.path().join(format!("stuck{i}")), b"s");
+    }
+    let mut c = config(dir.path());
+    c.workers = 1;
+    c.limits.file_timeout_ms = 100;
+    let started = std::time::Instant::now();
+    let report = scan_with(
+        c,
+        vec![Box::new(Staller {
+            on_stuck: std::time::Duration::from_secs(60),
+            on_other: std::time::Duration::ZERO,
+        })],
+    );
+    // One original worker plus one replacement, each abandoned after
+    // ~2.1s; then the scan stops instead of hanging.
+    assert!(started.elapsed() < std::time::Duration::from_secs(15));
+    assert_eq!(report.status, ScanStatus::TimeLimitReached);
+    assert_eq!(report.stats.files_scanned, 0);
+    // Two files abandoned, plus one issue accounting for the three files
+    // that were queued but never picked up.
+    let abandoned = report
+        .issues
+        .iter()
+        .filter(|i| i.message.contains("abandoned"))
+        .count();
+    assert_eq!(abandoned, 2, "{:?}", report.issues);
+    assert!(
+        report.issues.iter().any(|i| i.path.is_none()
+            && i.message.starts_with("3 queued file(s) were not scanned")),
+        "{:?}",
+        report.issues
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("Too many files stalled"))
+    );
+}
+
+#[test]
+fn whole_scan_time_limit_returns_partial_results() {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..200 {
+        write(&dir.path().join(format!("f{i:03}")), b"x");
+    }
+    let mut c = config(dir.path());
+    c.workers = 1;
+    c.limits.scan_timeout_ms = Some(300);
+    let started = std::time::Instant::now();
+    let report = scan_with(
+        c,
+        vec![Box::new(Staller {
+            on_stuck: std::time::Duration::ZERO,
+            on_other: std::time::Duration::from_millis(20),
+        })],
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert_eq!(report.status, ScanStatus::TimeLimitReached);
+    assert!(report.stats.files_scanned > 0);
+    assert!(
+        report.stats.files_scanned < 200,
+        "{}",
+        report.stats.files_scanned
+    );
+    assert_eq!(report.settings.scan_timeout_ms, Some(300));
+    assert!(report.warnings.iter().any(|w| w.contains("time limit")));
+}
+
+#[test]
+fn zero_scan_time_limit_is_rejected() {
+    let mut c = ScanConfig::new(vec![PathBuf::from(".")]);
+    c.limits.scan_timeout_ms = Some(0);
+    assert!(Scanner::new(c).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn followed_links_to_the_same_file_are_scanned_once() {
+    use std::os::unix::fs::symlink;
+    use warden_core::SymlinkPolicy;
+
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("real/indicator"), INDICATOR);
+    symlink(dir.path().join("real"), dir.path().join("dir-link")).unwrap();
+    symlink(
+        dir.path().join("real/indicator"),
+        dir.path().join("file-link"),
+    )
+    .unwrap();
+    let mut c = config(dir.path());
+    c.symlink_policy = SymlinkPolicy::Follow;
+    let report = scan_db(c);
+    assert_eq!(report.stats.files_scanned, 1);
+    assert_eq!(report.findings.len(), 1);
+    assert_eq!(skipped_count(&report, SkipReason::DuplicateFile), 2);
+}
+
+mod archives {
+    use super::*;
+    use std::io::{Cursor, Write};
+    use warden_core::FindingTarget;
+    use zip::write::SimpleFileOptions;
+
+    fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, data) in entries {
+            w.start_file(*name, SimpleFileOptions::default()).unwrap();
+            w.write_all(data).unwrap();
+        }
+        w.finish().unwrap().into_inner()
+    }
+
+    fn member_chain(f: &Finding) -> Vec<String> {
+        match &f.target {
+            FindingTarget::ArchiveMember { member, .. } => {
+                member.iter().map(|m| m.text.clone()).collect()
+            }
+            other => panic!("expected an archive member, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn indicator_inside_nested_zip_is_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        let inner = zip_of(&[("payload/indicator.txt", INDICATOR)]);
+        let outer = zip_of(&[("readme.txt", b"hello"), ("inner.zip", &inner)]);
+        write(&dir.path().join("delivery.zip"), &outer);
+
+        let report = scan_db(config(dir.path()));
+        assert!(report.is_complete(), "{:?}", report.issues);
+        assert_eq!(report.stats.files_scanned, 1);
+        assert_eq!(report.stats.archive_members_scanned, 3);
+        assert_eq!(report.findings.len(), 1);
+        let f = &report.findings[0];
+        assert_eq!(member_chain(f), vec!["inner.zip", "payload/indicator.txt"]);
+        assert!(f.target.path().unwrap().text.ends_with("delivery.zip"));
+        assert_eq!(f.target.sha256().unwrap().to_hex(), INDICATOR_SHA256);
+
+        // The member target round-trips through JSON.
+        let v = serde_json::to_value(&report).unwrap();
+        assert_eq!(v["findings"][0]["target"]["type"], "archive_member");
+        assert_eq!(
+            v["findings"][0]["target"]["member"][1]["text"],
+            "payload/indicator.txt"
+        );
+        let back: ScanReport = serde_json::from_value(v).unwrap();
+        assert_eq!(back, report);
+    }
+
+    #[test]
+    fn archives_can_be_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("a.zip"),
+            &zip_of(&[("indicator.txt", INDICATOR)]),
+        );
+        let mut c = config(dir.path());
+        c.limits.archives.enabled = false;
+        let report = scan_db(c);
+        assert!(report.findings.is_empty());
+        assert_eq!(report.stats.archive_members_scanned, 0);
+    }
+
+    #[test]
+    fn archive_larger_than_content_limit_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let noise: Vec<u8> = (0..20_000u32).flat_map(|i| i.to_le_bytes()).collect();
+        write(
+            &dir.path().join("big.zip"),
+            &zip_of(&[("indicator.txt", INDICATOR), ("noise", &noise)]),
+        );
+        let mut c = config(dir.path());
+        c.limits.max_content_size = 1024;
+        let report = scan_db(c);
+        assert!(report.findings.is_empty());
+        assert_eq!(skipped_count(&report, SkipReason::ArchiveTooLarge), 1);
+    }
+
+    #[test]
+    fn unsupported_members_and_corrupt_archives_are_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        // Rewrite the compression method of the only entry to 12 (bzip2),
+        // which this build does not decompress.
+        let mut z = zip_of(&[("m.bin", b"member")]);
+        z[8] = 12;
+        z[9] = 0;
+        let cd = z.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+        z[cd + 10] = 12;
+        z[cd + 11] = 0;
+        write(&dir.path().join("bzip2.zip"), &z);
+        write(&dir.path().join("broken.zip"), b"PK\x03\x04 truncated");
+
+        let report = scan_db(config(dir.path()));
+        assert_eq!(report.stats.files_scanned, 2);
+        assert_eq!(
+            skipped_count(&report, SkipReason::ArchiveMemberUnsupported),
+            1
+        );
+        let unsupported = report
+            .skipped
+            .iter()
+            .find(|s| s.reason == SkipReason::ArchiveMemberUnsupported)
+            .unwrap();
+        assert_eq!(unsupported.member.as_ref().unwrap()[0].text, "m.bin");
+        assert_eq!(report.issues.len(), 1, "{:?}", report.issues);
+        assert_eq!(report.issues[0].kind, IssueKind::ArchiveError);
+        assert!(
+            report.issues[0]
+                .path
+                .as_ref()
+                .unwrap()
+                .text
+                .ends_with("broken.zip")
+        );
+    }
+
+    #[test]
+    fn hash_only_scan_expands_archives_without_buffering_other_files() {
+        // No content detectors: archives are still expanded; plain files are
+        // hashed as before.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("a.zip"),
+            &zip_of(&[("indicator.txt", INDICATOR)]),
+        );
+        write(&dir.path().join("plain.txt"), b"plain");
+        let report = scan_db(config(dir.path()));
+        assert_eq!(report.stats.files_scanned, 2);
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(member_chain(&report.findings[0]), vec!["indicator.txt"]);
+    }
+
+    #[test]
+    fn office_style_zip_with_misleading_extension_is_expanded() {
+        // Detection is by content signature, not by file name.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("invoice.docx"),
+            &zip_of(&[("word/media/indicator.bin", INDICATOR)]),
+        );
+        write(
+            &dir.path().join("photo.jpg"),
+            &zip_of(&[("x/indicator.txt", INDICATOR)]),
+        );
+        let report = scan_db(config(dir.path()));
+        assert_eq!(report.findings.len(), 2);
+    }
+}

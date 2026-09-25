@@ -1,0 +1,22 @@
+{
+  "format": "abyssal-warden.content-manifest",
+  "format_version": 1,
+  "name": "abyssal-warden-synthetic-test",
+  "sequence": 1,
+  "issued": "2026-09-25T16:25:12Z",
+  "expires": "2099-12-31T00:00:00Z",
+  "files": [
+    {
+      "path": "rules/synthetic-test.yar",
+      "kind": "yara_rules",
+      "size": 607,
+      "sha256": "4067599abe8fe22d857ab7165c1d43aef73f86e4c938ab4c69b0e1076f56accb"
+    },
+    {
+      "path": "signatures/synthetic-test-indicators.json",
+      "kind": "hash_database",
+      "size": 902,
+      "sha256": "3b10cdc4edf774def83a8e7c68382efc9996a16362641ff3ba16da4870f5ccd2"
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+# Abyssal Warden service. See docs/user/service.md and
+# docs/security/privilege-model.md for why each setting is chosen.
+[Unit]
+Description=Abyssal Warden malware scanning service
+Documentation=https://github.com/LordSodomiser/abyssal-warden/blob/main/docs/user/service.md
+After=local-fs.target systemd-journald.socket
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/abyssal-wardend
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+
+# /run/abyssal-warden (socket) and /var/lib/abyssal-warden (history,
+# reports, quarantine store).
+RuntimeDirectory=abyssal-warden
+RuntimeDirectoryMode=0755
+StateDirectory=abyssal-warden
+StateDirectoryMode=0700
+
+# Capabilities: read everything (scanning), move and restore files
+# (quarantine), start children as the scanner account with reduced
+# capabilities (setpriv), stop processes running quarantined files, and
+# inspect other processes (system checks).
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_FOWNER CAP_CHOWN CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL CAP_SYS_PTRACE
+NoNewPrivileges=yes
+
+# Scanning must see the real /home, /root and /tmp: ProtectHome and
+# PrivateTmp are deliberately not set. Quarantine never touches /usr, /boot
+# or /etc (policy), so those are read-only.
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# MemoryDenyWriteExecute is not set: YARA-X compiles rules to machine code
+# (wasmtime) in the scanner children, which inherit it.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+PrivateNetwork=no
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+{
+  "admin_group": "abyssal-warden-admin",
+  "content": ["/usr/share/abyssal-warden/content"],
+  "max_concurrent_jobs": 1,
+  "job_timeout_minutes": 240,
+  "history_limit": 200,
+  "audit_check_hours": 24,
+  "schedules": [
+    { "name": "daily-home", "paths": ["/home", "/root", "/tmp", "/var/tmp"],
+      "every_hours": 24, "at_utc": "02:30", "heuristics": true },
+    { "name": "system-check", "kind": "system_check", "every_hours": 24, "at_utc": "03:30" }
+  ]
+}

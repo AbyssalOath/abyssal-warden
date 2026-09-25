@@ -11,8 +11,11 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 warden-core = { path = "../crates/core" }
 warden-engine = { path = "../crates/engine" }
+warden-heuristics = { path = "../crates/heuristics" }
+warden-ipc = { path = "../crates/ipc" }
 warden-yara = { path = "../crates/yara" }
 warden-remediation = { path = "../crates/remediation" }
+warden-system = { path = "../crates/system" }
 
 # Kept out of the main workspace: it needs nightly and cargo-fuzz.
 [workspace]
@@ -41,6 +44,34 @@ bench = false
 [[bin]]
 name = "audit-log"
 path = "fuzz_targets/audit_log.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive-expand"
+path = "fuzz_targets/archive_expand.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "system-parsers"
+path = "fuzz_targets/system_parsers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "heuristics"
+path = "fuzz_targets/heuristics.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ipc-decode"
+path = "fuzz_targets/ipc_decode.rs"
 test = false
 doc = false
 bench = false

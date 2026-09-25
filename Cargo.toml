@@ -1,10 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/engine", "crates/yara", "crates/remediation", "crates/cli"]
+members = ["crates/core", "crates/engine", "crates/yara", "crates/heuristics", "crates/remediation", "crates/system", "crates/ipc", "crates/service", "crates/cli"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# Minimum supported Rust version, checked by the `msrv` CI job. Bound by
+# yara-x/wasmtime (1.93); raise it deliberately, never implicitly.
+rust-version = "1.93"
 repository = "https://github.com/LordSodomiser/abyssal-warden"
 # See docs/architecture/decisions/0004-project-license.md.
 license = "AGPL-3.0-only"
@@ -13,8 +16,12 @@ publish = false
 [workspace.dependencies]
 warden-core = { path = "crates/core" }
 warden-engine = { path = "crates/engine" }
+warden-heuristics = { path = "crates/heuristics" }
 warden-yara = { path = "crates/yara" }
 warden-remediation = { path = "crates/remediation" }
+warden-ipc = { path = "crates/ipc" }
+warden-service = { path = "crates/service" }
+warden-system = { path = "crates/system" }
 
 clap = { version = "4.5", features = ["derive"] }
 ctrlc = "3.4"

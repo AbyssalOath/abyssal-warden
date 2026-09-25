@@ -72,6 +72,7 @@ fuzz_target!(|data: &[u8]| {
         metadata: &meta,
         content: Some(data),
         deadline: Instant::now() + Duration::from_secs(5),
+        member: None,
     };
     WORKER.with(|w| {
         let _ = w.borrow_mut().inspect_file(&obs);

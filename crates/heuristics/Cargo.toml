@@ -1,0 +1,24 @@
+[package]
+name = "warden-heuristics"
+description = "Abyssal Warden heuristic detectors: file names, PE and ELF structure, scripts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+warden-core.workspace = true
+memchr = "2.7"
+# Read-only parsing of untrusted executables; already in the tree through
+# YARA-X. See docs/architecture/decisions/0017-file-heuristics.md.
+object = { version = "0.39", default-features = false, features = ["read_core", "elf", "pe", "std"] }
+regex = { version = "1.11", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
+time.workspace = true
+
+[dev-dependencies]
+walkdir.workspace = true
+
+[lints]
+workspace = true

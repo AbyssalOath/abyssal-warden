@@ -11,12 +11,15 @@ design for a future component. Design documents say so in their first line.
 | | [GUI framework evaluation](architecture/gui.md) | proposal |
 | | [Architecture decision records](architecture/decisions/README.md) | - |
 | Security | [Threat model](security/threat-model.md) | current |
-| | [Privilege model](security/privilege-model.md) | design |
+| | [Privilege model](security/privilege-model.md) | current (Linux) |
 | | [Quarantine](security/quarantine.md) | current (Linux) |
+| | [Content trust: bundles, keyrings, rollback, key procedure](security/content-trust.md) | current |
 | | [Update security](security/update-security.md) | signing current; updates design |
 | Detection | [Signatures](detection/signatures.md) | current |
 | | [YARA rules](detection/yara.md) | current |
-| | [Heuristics](detection/heuristics.md) | design |
+| | [Archive scanning](detection/archives.md) | current (ZIP) |
+| | [System checks: persistence and integrity rules](detection/system-checks.md) | current (Linux; Windows live) |
+| | [Heuristics](detection/heuristics.md) | current (PE rules unmeasured) |
 | | [Detection evaluation methodology](detection/testing.md) | current |
 | Platform | [Windows](platform/windows.md) | current + research |
 | | [Linux](platform/linux.md) | current + research |
@@ -27,4 +30,6 @@ design for a future component. Design documents say so in their first line.
 | User | [Installation](user/installation.md) | current |
 | | [Scanning](user/scanning.md) | current |
 | | [Remediation](user/remediation.md) | current (Linux) |
+| | [System check](user/system-check.md) | current (Linux; Windows live) |
+| | [Service](user/service.md) | current (Linux) |
 | | [Known limitations](known-limitations.md) | current |

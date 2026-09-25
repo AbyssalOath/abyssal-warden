@@ -36,6 +36,7 @@ use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use warden_core::{ObservedPath, Sha256Digest};
 
+use crate::allowlist::{ALLOWLIST_FILE, AllowEntry, AllowlistFile, MAX_ALLOWLIST_BYTES};
 use crate::audit::{AuditEntry, ChainHead, encode, verify_chain};
 use crate::policy::{is_protected_path, native_path};
 use crate::record::{hex, unhex};
@@ -80,7 +81,12 @@ pub struct QuarantineStore {
     audit: File,
     head: ChainHead,
     euid: u32,
+    on_behalf_of: Option<u32>,
     recovered: Vec<RecoveryAction>,
+    /// Where audit anchors go (`None`: disabled).
+    anchor: Option<PathBuf>,
+    /// An audit anchor could not be sent to the system log.
+    anchor_failed: bool,
     #[cfg(test)]
     pub(crate) fault: Option<Fault>,
 }
@@ -95,6 +101,11 @@ impl QuarantineStore {
     /// broken, since that indicates tampering or corruption that an operator
     /// must look at.
     pub fn open(root: &Path) -> Result<Self> {
+        Self::open_with(root, &AnchorTarget::FromEnvironment)
+    }
+
+    /// [`QuarantineStore::open`] with an explicit audit anchor target.
+    pub fn open_with(root: &Path, anchor: &AnchorTarget) -> Result<Self> {
         let (parent, name) = split_checked(root)?;
         std::fs::create_dir_all(&parent).map_err(|e| io_err("create", &parent, e))?;
         let parent = std::fs::canonicalize(&parent).map_err(|e| io_err("resolve", &parent, e))?;
@@ -149,8 +160,11 @@ impl QuarantineStore {
             _lock: lock,
             audit,
             head,
+            on_behalf_of: None,
             euid,
             recovered: Vec::new(),
+            anchor: anchor.resolve(),
+            anchor_failed: false,
             #[cfg(test)]
             fault: None,
         };
@@ -228,6 +242,19 @@ impl QuarantineStore {
                 links,
             });
         }
+
+        // Processes running (mapping) this exact file. With `kill_processes`
+        // they are paused now; the guard resumes them if anything below
+        // fails, and they are killed only once the file is safely stored.
+        let users = processes::processes_using(st.st_dev, st.st_ino);
+        let mut process_notes = Vec::new();
+        let paused = if req.kill_processes && !users.is_empty() {
+            let (guard, problems) = processes::Paused::pause(&users);
+            process_notes.extend(problems);
+            Some(guard)
+        } else {
+            None
+        };
 
         let id = QuarantineId::random().map_err(|e| io_err("random", path, io::Error::other(e)))?;
         let mut key = [0u8; KEY_LEN];
@@ -309,6 +336,26 @@ impl QuarantineStore {
         }
         rfs::fsync(&dir).map_err(|e| io_err("sync", &parent, e))?;
         self.fault_point(Fault::OriginalRemoved)?;
+
+        if !users.is_empty() {
+            let list = users
+                .iter()
+                .map(|p| format!("PID {} ({})", p.pid, p.name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            match paused {
+                Some(guard) => {
+                    process_notes.extend(guard.kill());
+                    rec.notes
+                        .push(format!("killed process(es) running the file: {list}"));
+                }
+                None => rec.notes.push(format!(
+                    "still running from the quarantined file: {list} (not stopped; use \
+                     --kill-processes to stop them)"
+                )),
+            }
+            rec.notes.extend(process_notes);
+        }
 
         // Step 7.
         rec.state = ItemState::Quarantined;
@@ -519,6 +566,99 @@ impl QuarantineStore {
         self.save(&rec)
     }
 
+    /// The allow-list (exact SHA-256 values the user chose to keep).
+    pub fn allowlist(&self) -> Result<Vec<AllowEntry>> {
+        Ok(self.read_allowlist_file()?.entries)
+    }
+
+    /// Add `sha256` to the allow-list (no-op if present). Audit-logged.
+    pub fn allow(
+        &mut self,
+        sha256: Sha256Digest,
+        reason: &str,
+        item: Option<&QuarantineId>,
+        detection_name: Option<&str>,
+    ) -> Result<()> {
+        let mut list = self.read_allowlist_file()?;
+        if !list.entries.iter().any(|e| e.sha256 == sha256) {
+            if list.entries.len() >= crate::MAX_ALLOW_ENTRIES {
+                return Err(RemediationError::StoreInsecure {
+                    path: self.root.join(ALLOWLIST_FILE),
+                    reason: format!(
+                        "the allow-list is full ({} entries)",
+                        crate::MAX_ALLOW_ENTRIES
+                    ),
+                });
+            }
+            list.entries.push(AllowEntry {
+                sha256,
+                added_at: OffsetDateTime::now_utc(),
+                reason: reason.to_owned(),
+                item: item.map(ToString::to_string),
+                detection_name: detection_name.map(str::to_owned),
+            });
+            self.write_allowlist_file(&list)?;
+        }
+        self.audit_event(
+            "allow",
+            item,
+            None,
+            Some(sha256),
+            Ok(Some(reason.to_owned())),
+        )
+    }
+
+    /// Remove `sha256` from the allow-list. Returns whether it was present.
+    pub fn disallow(&mut self, sha256: Sha256Digest) -> Result<bool> {
+        let mut list = self.read_allowlist_file()?;
+        let before = list.entries.len();
+        list.entries.retain(|e| e.sha256 != sha256);
+        let removed = list.entries.len() != before;
+        if removed {
+            self.write_allowlist_file(&list)?;
+            self.audit_event("disallow", None, None, Some(sha256), Ok(None))?;
+        }
+        Ok(removed)
+    }
+
+    fn read_allowlist_file(&self) -> Result<AllowlistFile> {
+        let path = self.root.join(ALLOWLIST_FILE);
+        let fd = match rfs::openat(
+            &self.root_fd,
+            ALLOWLIST_FILE,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(fd) => fd,
+            Err(Errno::NOENT) => {
+                return Ok(AllowlistFile {
+                    format_version: 1,
+                    entries: Vec::new(),
+                });
+            }
+            Err(e) => return Err(io_err("open", &path, e)),
+        };
+        let mut data = Vec::new();
+        File::from(fd)
+            .take(MAX_ALLOWLIST_BYTES + 1)
+            .read_to_end(&mut data)
+            .map_err(|e| io_err("read", &path, e))?;
+        if data.len() as u64 > MAX_ALLOWLIST_BYTES {
+            return Err(RemediationError::StoreInsecure {
+                path,
+                reason: "the allow-list is too large".into(),
+            });
+        }
+        crate::allowlist::parse(&data, &path)
+    }
+
+    fn write_allowlist_file(&self, list: &AllowlistFile) -> Result<()> {
+        let path = self.root.join(ALLOWLIST_FILE);
+        let data = serde_json::to_vec_pretty(list)
+            .map_err(|e| io_err("encode", &path, io::Error::other(e)))?;
+        write_atomic(&self.root_fd, ALLOWLIST_FILE, &data, &path)
+    }
+
     /// Load one record.
     pub fn get(&self, id: &QuarantineId) -> Result<QuarantineRecord> {
         let name = format!("{id}.json");
@@ -564,7 +704,41 @@ impl QuarantineStore {
         Ok(out)
     }
 
+    /// Records `uid` as the user later actions are performed for (a
+    /// service acting on a client's request). The actor stays this
+    /// process's own uid.
+    pub fn on_behalf_of(&mut self, uid: Option<u32>) {
+        self.on_behalf_of = uid;
+    }
+
+    /// The audit log's current head: sequence number and SHA-256 (hex) of
+    /// the last entry, as anchored in the system log.
+    pub fn audit_head(&self) -> (u64, &str) {
+        (self.head.seq, &self.head.hash)
+    }
+
+    /// True if any audit anchor in this session could not be delivered to
+    /// the system log.
+    pub fn anchor_failed(&self) -> bool {
+        self.anchor_failed
+    }
+
     /// Re-verify the audit log's hash chain; returns the number of entries.
+    /// Verifies the audit chain and returns every entry's sequence number
+    /// and hash, for comparison with the system log's anchors.
+    pub fn audit_chain(&mut self) -> Result<Vec<(u64, String)>> {
+        use std::io::Seek;
+        self.audit
+            .rewind()
+            .map_err(|e| io_err("read", &self.root.join("audit.log"), e))?;
+        Ok(crate::audit::audit_chain(&mut self.audit)?)
+    }
+
+    /// The audit chain's identifier (in every anchor), once it has entries.
+    pub fn chain_id(&self) -> Option<String> {
+        self.head.chain_id()
+    }
+
     pub fn verify_audit_log(&mut self) -> Result<u64> {
         use std::io::Seek;
         self.audit
@@ -794,24 +968,11 @@ impl QuarantineStore {
 
     /// Atomically replace `items/<id>.json`.
     fn save(&self, rec: &QuarantineRecord) -> Result<()> {
-        let tmp = format!(".{}.json.tmp", rec.id);
         let name = format!("{}.json", rec.id);
         let path = self.root.join("items").join(&name);
         let data = serde_json::to_vec_pretty(rec)
             .map_err(|e| io_err("encode", &path, io::Error::other(e)))?;
-        let fd = rfs::openat(
-            &self.items_fd,
-            tmp.as_str(),
-            OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::from_raw_mode(0o600),
-        )
-        .map_err(|e| io_err("create", &path, e))?;
-        let mut f = File::from(fd);
-        f.write_all(&data).map_err(|e| io_err("write", &path, e))?;
-        f.sync_all().map_err(|e| io_err("sync", &path, e))?;
-        rfs::renameat(&self.items_fd, tmp.as_str(), &self.items_fd, name.as_str())
-            .map_err(|e| io_err("rename", &path, e))?;
-        rfs::fsync(&self.items_fd).map_err(|e| io_err("sync", &path, e))
+        write_atomic(&self.items_fd, &name, &data, &path)
     }
 
     fn audit_event(
@@ -830,6 +991,7 @@ impl QuarantineStore {
             seq: 0,
             time: OffsetDateTime::now_utc(),
             actor_uid: self.euid,
+            on_behalf_of: self.on_behalf_of,
             action: action.to_owned(),
             item: id.map(ToString::to_string),
             path: path.map(ObservedPath::from_path),
@@ -846,6 +1008,17 @@ impl QuarantineStore {
         self.audit
             .sync_data()
             .map_err(|e| io_err("sync", &audit_path, e))?;
+        let chain = head.chain_id().unwrap_or_default();
+        if !anchor::send(
+            self.anchor.as_deref(),
+            head.seq,
+            &head.hash,
+            &chain,
+            action,
+            outcome,
+        ) {
+            self.anchor_failed = true;
+        }
         self.head = head;
         Ok(())
     }
@@ -890,6 +1063,24 @@ impl QuarantineStore {
     fn fault_point(&self, _at: Fault) -> Result<()> {
         Ok(())
     }
+}
+
+/// Atomically replace `dir/name` with `data`: write a private temporary
+/// file, fsync it, rename it over the target, fsync the directory.
+fn write_atomic(dir: &OwnedFd, name: &str, data: &[u8], display: &Path) -> Result<()> {
+    let tmp = format!(".{name}.tmp");
+    let fd = rfs::openat(
+        dir,
+        tmp.as_str(),
+        OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    )
+    .map_err(|e| io_err("create", display, e))?;
+    let mut f = File::from(fd);
+    f.write_all(data).map_err(|e| io_err("write", display, e))?;
+    f.sync_all().map_err(|e| io_err("sync", display, e))?;
+    rfs::renameat(dir, tmp.as_str(), dir, name).map_err(|e| io_err("rename", display, e))?;
+    rfs::fsync(dir).map_err(|e| io_err("sync", display, e))
 }
 
 fn corrupt(id: &QuarantineId, reason: &str) -> RemediationError {
@@ -999,5 +1190,8 @@ fn check_private(st: &Stat, path: &Path, euid: u32) -> Result<()> {
     Ok(())
 }
 
+mod anchor;
+mod processes;
+pub use anchor::AnchorTarget;
 #[cfg(test)]
 mod tests;

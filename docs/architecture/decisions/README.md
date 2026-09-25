@@ -16,11 +16,20 @@ Template: context → options considered → decision → consequences.
 | [0006](0006-content-access-and-time-limits.md) | Content access, per-worker state, per-file time limit | Accepted |
 | [0007](0007-content-signing.md) | Signed detection content (minisign) | Accepted |
 | [0008](0008-quarantine-store.md) | Quarantine store and remediation safety model | Accepted |
+| [0009](0009-stall-watchdog.md) | Stall watchdog, whole-scan time limit, detached scan threads | Accepted |
+| [0010](0010-root-relative-opens.md) | Root-relative file opens (cap-std) and cross-platform file IDs | Accepted |
+| [0011](0011-archive-scanning.md) | Archive scanning (ZIP) | Accepted |
+| [0012](0012-content-bundles.md) | Signed content bundles, keyrings, rollback protection | Accepted (amended by 0013) |
+| [0013](0013-threshold-floors-revocation.md) | Threshold signatures, sequence floors, revocation carried by content | Accepted |
+| [0014](0014-remediation-completeness.md) | Allow-list, audit anchoring, stopping running malware | Accepted |
+| [0015](0015-system-checks.md) | Linux persistence inventory and integrity checks | Accepted |
+| [0016](0016-package-trust-self-integrity-windows.md) | Package trust, scanner self-integrity, Windows persistence | Accepted |
+| [0017](0017-file-heuristics.md) | File heuristics | Accepted |
+| [0018](0018-service-and-ipc.md) | Service, local IPC and privilege separation (Linux) | Accepted |
 
 Pending decisions, each to be recorded before its implementation starts:
 
 * IPC transport and authorisation ([design notes](../../security/privilege-model.md))
 * GUI framework ([evaluation](../gui.md))
-* Update mechanism: rollback/freeze protection, TUF ([design notes](../../security/update-security.md))
-* Project signing-key management
+* Automatic update mechanism (TUF) ([design notes](../../security/update-security.md))
 * Windows quarantine store

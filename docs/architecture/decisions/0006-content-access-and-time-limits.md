@@ -1,6 +1,6 @@
 # ADR-0006: Content access, per-worker detector state, per-file time limit
 
-* **Status:** Accepted (amends ADR-0002)
+* **Status:** Accepted (amends ADR-0002); thread model and stall handling amended by [ADR-0009](0009-stall-watchdog.md)
 * **Date:** 2026-09-24
 
 ## Context
@@ -30,8 +30,8 @@ hold a worker indefinitely.
 **Per-worker detector state.**
 * `Detector::worker(&self) -> Box<dyn DetectorWorker + '_>` is called once
   per worker thread per scan, and again after a panic. The worker may borrow
-  the detector: scan threads are scoped, so this needs no `unsafe` or `'static`
-  data. The default forwards to `inspect_file`, so stateless detectors are
+  the detector (each scan thread holds the detector through an `Arc`), so
+  this needs no `unsafe`. The default forwards to `inspect_file`, so stateless detectors are
   unaffected.
 
 **Per-file time limit.**
@@ -44,7 +44,7 @@ hold a worker indefinitely.
 ## Consequences
 
 * A single blocking `read(2)` on a hung network or FUSE filesystem cannot be
-  interrupted and can exceed the limit. Fixing that needs a watchdog that
-  can abandon a worker thread; recorded as a known limitation.
+  interrupted and can exceed the limit. [ADR-0009](0009-stall-watchdog.md)
+  adds a watchdog that abandons such workers so the scan still finishes.
 * A detector that ignores the deadline can overrun it. The contract in
   `detector.rs` requires honouring it.

@@ -55,13 +55,22 @@ pub fn auto_quarantine_target(finding: &Finding) -> Result<(PathBuf, Sha256Diges
     if finding.recommended_action != RecommendedAction::Quarantine {
         return Err("the detection does not recommend quarantine".into());
     }
-    let FindingTarget::File {
-        path,
-        sha256: Some(sha256),
-        ..
-    } = &finding.target
-    else {
-        return Err("the finding does not identify a file by hash".into());
+    let (path, sha256) = match &finding.target {
+        FindingTarget::File {
+            path,
+            sha256: Some(sha256),
+            ..
+        } => (path, sha256),
+        // Quarantining a whole archive (possibly a user's document or
+        // backup) because one member matched is a decision for a person.
+        FindingTarget::ArchiveMember { .. } => {
+            return Err(
+                "the detection is inside an archive; review it and quarantine the archive \
+                 manually if appropriate"
+                    .into(),
+            );
+        }
+        _ => return Err("the finding does not identify a file by hash".into()),
     };
     let path = native_path(path).ok_or("the file path could not be reconstructed")?;
     if is_protected_path(&path) {
@@ -150,6 +159,16 @@ mod tests {
         let mut review = ok.clone();
         review.recommended_action = RecommendedAction::Review;
         assert!(auto_quarantine_target(&review).is_err());
+
+        let mut in_archive = ok.clone();
+        in_archive.target = FindingTarget::ArchiveMember {
+            archive: ObservedPath::from_path(Path::new("/home/u/a.zip")),
+            member: vec![ObservedPath::from_path(Path::new("evil.exe"))],
+            sha256: Some(Sha256Digest::from_bytes([1; 32])),
+            size: 1,
+        };
+        let why = auto_quarantine_target(&in_archive).unwrap_err();
+        assert!(why.contains("inside an archive"), "{why}");
     }
 
     // Protected prefixes are defined for Unix only; the quarantine store is

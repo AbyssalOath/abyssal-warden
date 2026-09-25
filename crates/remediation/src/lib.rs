@@ -22,26 +22,32 @@
 //! Implemented for Linux only. On other platforms [`QuarantineStore::open`]
 //! returns [`RemediationError::Unsupported`].
 
+mod allowlist;
+mod anchors;
 mod audit;
 mod policy;
 mod record;
+mod report;
 
 #[cfg(target_os = "linux")]
 mod linux;
 
-pub use audit::{AuditEntry, AuditError, verify_audit_log};
+pub use allowlist::{AllowEntry, MAX_ALLOW_ENTRIES, read_allowlist};
+pub use anchors::{Anchor, AnchorComparison, compare_anchors, parse_anchor};
+pub use audit::{AuditEntry, AuditError, audit_chain, chain_id, verify_audit_log};
 pub use policy::{auto_quarantine_target, is_protected_path};
 pub use record::{
     ItemState, OriginalFile, QuarantineId, QuarantineReason, QuarantineRecord,
     RECORD_FORMAT_VERSION,
 };
+pub use report::{mark_allowed, quarantine_report, reason_for};
 
 use std::path::PathBuf;
 
 use warden_core::Sha256Digest;
 
 #[cfg(target_os = "linux")]
-pub use linux::QuarantineStore;
+pub use linux::{AnchorTarget, QuarantineStore};
 
 /// Default store location: `/var/lib/abyssal-warden/quarantine` when running
 /// as root, otherwise `$XDG_DATA_HOME/abyssal-warden/quarantine` (falling
@@ -73,6 +79,9 @@ pub struct QuarantineRequest {
     /// Permit paths under system directories (see [`is_protected_path`]).
     /// Never set automatically.
     pub allow_protected: bool,
+    /// Pause processes running the file before it is moved, and kill them
+    /// once it is quarantined (Linux). Without this they are only reported.
+    pub kill_processes: bool,
 }
 
 /// What recovery did with an operation that was interrupted.
@@ -191,6 +200,27 @@ mod unsupported {
             Err(RemediationError::Unsupported)
         }
         pub fn verify_audit_log(&mut self) -> Result<u64, RemediationError> {
+            Err(RemediationError::Unsupported)
+        }
+        pub fn audit_head(&self) -> (u64, &str) {
+            (0, "")
+        }
+        pub fn anchor_failed(&self) -> bool {
+            false
+        }
+        pub fn allowlist(&self) -> Result<Vec<AllowEntry>, RemediationError> {
+            Err(RemediationError::Unsupported)
+        }
+        pub fn allow(
+            &mut self,
+            _sha256: Sha256Digest,
+            _reason: &str,
+            _item: Option<&QuarantineId>,
+            _detection_name: Option<&str>,
+        ) -> Result<(), RemediationError> {
+            Err(RemediationError::Unsupported)
+        }
+        pub fn disallow(&mut self, _sha256: Sha256Digest) -> Result<bool, RemediationError> {
             Err(RemediationError::Unsupported)
         }
     }

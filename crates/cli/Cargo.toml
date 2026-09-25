@@ -3,6 +3,7 @@ name = "warden-cli"
 description = "Abyssal Warden command-line interface"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
@@ -11,18 +12,35 @@ publish.workspace = true
 name = "abyssal-warden"
 path = "src/main.rs"
 
+[[bin]]
+name = "abyssal-wardend"
+path = "src/bin/abyssal-wardend.rs"
+
 [dependencies]
 warden-core.workspace = true
 warden-engine.workspace = true
+warden-heuristics.workspace = true
+warden-ipc.workspace = true
+warden-service.workspace = true
 warden-yara.workspace = true
 warden-remediation.workspace = true
+warden-system.workspace = true
 clap.workspace = true
 ctrlc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
 time.workspace = true
+uuid.workspace = true
 
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1", features = ["process"] }
+
+[dev-dependencies]
+minisign = "0.9"
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [lints]
 workspace = true

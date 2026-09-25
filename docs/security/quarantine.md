@@ -95,14 +95,57 @@ action `quarantine`, and a file target with a hash (in practice: an exact
 match in a hash database), and not under a protected directory. The
 quarantine re-checks the hash, so a file that changed after the scan is left
 alone. All other findings are marked `not_eligible` with the reason. YARA,
-heuristic and test-indicator findings are never remediated automatically.
+heuristic and test-indicator findings, and findings **inside archives**, are
+never remediated automatically (quarantining a whole archive is a decision
+for a person).
+
+## Processes running the file
+
+Before the file is moved, the store looks for processes that map it: its
+executable and shared libraries, matched by device and inode in
+`/proc/<pid>/maps`, even after deletion. They are always listed in the
+item's notes. With `--kill-processes`:
+
+1. they are paused (SIGSTOP) before the move;
+2. they are killed (SIGKILL) only after the file is safely stored;
+3. if the quarantine fails at any step, a guard resumes them (SIGCONT).
+
+Not found: scripts run by an interpreter (read, not mapped), and other
+users' processes when not running as root.
+
+## Allow-list
+
+Restoring an item adds its SHA-256 to `allowlist.json` in the store (unless
+`--no-allow`). Later scans still report matching findings, marked
+`allowed`. They are never quarantined automatically and don't count toward
+exit status 1. Only the exact content is allowed: any change makes it a new
+file. Manage it with `quarantine allowlist list|remove`. Every change is in
+the audit log.
 
 ## Audit log
 
 Each line holds `seq`, time, the acting uid, action, item, path, hash,
-outcome, detail and `prev` (SHA-256 of the previous line).
+outcome, detail and `prev` (SHA-256 of the previous line). When the service
+acts for a client, `on_behalf_of` records the client's uid.
 `quarantine verify-log` checks the chain, and the store **refuses to open**
 if it is broken.
+
+Each entry's `seq` and hash are also sent to the system log (syslog/journald,
+tag `abyssal-warden`, `authpriv.notice`), where unprivileged users cannot
+alter or delete them:
+
+```sh
+abyssal-warden quarantine verify-log         # prints: head: seq=N hash=H
+journalctl -t abyssal-warden | grep 'seq=N ' # must show the same hash
+abyssal-warden service verify-audit          # the service compares them all
+```
+
+Anchors read `audit seq=N hash=H chain=C action=A outcome=O`, where `C`
+identifies the chain (the first entry's hash prefix), so anchors of
+different stores are not mixed up. A mismatch, or anchored entries missing
+from the local log, means the local log was rewritten. The service performs
+this comparison automatically ([service.md](../user/service.md)). Only fixed ASCII fields are sent (no paths). If the system
+log is unreachable, operations still succeed with a warning.
 
 ## Guarantees
 
@@ -116,7 +159,9 @@ if it is broken.
 
 ## Not guaranteed
 
-* **Running processes** keep executing; quarantine does not kill them.
+* **Running processes** keep executing unless `--kill-processes` is given;
+  interpreted scripts and other users' processes (without root) are not
+  found, and a process started between the check and the move is missed.
 * **Persistence** (services, cron, autostart entries) that references the
   file is not cleaned up.
 * **Rootkit-protected or locked files** may not be removable.
@@ -125,10 +170,9 @@ if it is broken.
   Only a name in that same directory is affected, one the attacker could
   already delete. Kernel `protected_hardlinks` stops hard-linking other
   users' files into place.
-* The audit chain does not stop someone who can rewrite the whole file (no
-  external anchor yet).
+* The service compares the audit chain with the system log automatically;
+  the CLI alone does not. A root attacker can alter both.
 * Stored content is only XOR-encoded (inert, not encrypted).
-* No privilege separation: the CLI acts with the invoking user's rights until
-  the service exists.
-* Restored files are not added to an allow-list and will be detected again
-  by the next scan.
+* The CLI acts with the invoking user's rights; the service (Linux) acts as
+  root for administrators only, and scans in unprivileged children.
+* The allow-list is exact-hash only and per store (per user).

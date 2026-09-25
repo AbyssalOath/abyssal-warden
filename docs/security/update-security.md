@@ -13,8 +13,14 @@ signature check is future work.
 * Signed content is required by default; unsigned content needs
   `--allow-unsigned` and produces a report warning. Invalid signatures are
   always fatal.
-* Not implemented: rollback protection, expiry/freeze protection, key
-  rotation, a project signing key.
+* **Signed content bundles** with rollback, equivocation, expiry (freeze)
+  and mix-and-match protection, and **keyrings** with revocation and
+  validity windows: see [content-trust.md](content-trust.md).
+* **Threshold signatures, sequence floors for fresh installations, and
+  revocations carried by content** (ADR-0013).
+* Not implemented: an automatic updater with online freshness (TUF timestamp
+  role), and the project's actual signing keys (the procedure is defined in
+  content-trust.md).
 
 ## Threats addressed by the design
 

@@ -55,6 +55,9 @@ pub struct FileObservation<'a> {
     /// When the per-file time budget runs out. Long-running detectors must
     /// stop and return an error once it has passed.
     pub deadline: Instant,
+    /// Set when this observation is a member of an archive at `path`: the
+    /// member names from the outermost archive inward.
+    pub member: Option<&'a [ObservedPath]>,
 }
 
 impl FileObservation<'_> {
@@ -63,12 +66,20 @@ impl FileObservation<'_> {
         self.deadline.saturating_duration_since(Instant::now())
     }
 
-    /// The [`FindingTarget`] describing this file.
+    /// The [`FindingTarget`] describing this file, or this archive member.
     pub fn target(&self) -> FindingTarget {
-        FindingTarget::File {
-            path: ObservedPath::from_path(self.path),
-            sha256: Some(*self.sha256),
-            metadata: Some(self.metadata.clone()),
+        match self.member {
+            None => FindingTarget::File {
+                path: ObservedPath::from_path(self.path),
+                sha256: Some(*self.sha256),
+                metadata: Some(self.metadata.clone()),
+            },
+            Some(chain) => FindingTarget::ArchiveMember {
+                archive: ObservedPath::from_path(self.path),
+                member: chain.to_vec(),
+                sha256: Some(*self.sha256),
+                size: self.metadata.size,
+            },
         }
     }
 }

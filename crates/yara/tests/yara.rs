@@ -266,3 +266,28 @@ fn signer_is_recorded() {
         Some("ABCDEF0123456789")
     );
 }
+
+#[test]
+fn rules_match_inside_archives() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    w.start_file("docs/marker.txt", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    w.write_all(b"xx ABYSSAL-WARDEN-YARA-SYNTHETIC-MARKER xx")
+        .unwrap();
+    std::fs::write(
+        dir.path().join("bundle.zip"),
+        w.finish().unwrap().into_inner(),
+    )
+    .unwrap();
+
+    let report = scan(dir.path(), compile(MARKER_RULE).unwrap(), |_| {});
+    assert_eq!(report.findings.len(), 1, "{:?}", report.issues);
+    match &report.findings[0].target {
+        warden_core::FindingTarget::ArchiveMember { member, .. } => {
+            assert_eq!(member[0].text, "docs/marker.txt");
+        }
+        other => panic!("{other:?}"),
+    }
+}

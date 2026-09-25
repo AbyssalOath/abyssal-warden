@@ -1,0 +1,13 @@
+{
+  "format": "abyssal-warden.keyring",
+  "format_version": 1,
+  "keys": [
+    {
+      "id": "70EF691BC71E4DD9",
+      "public_key": "RWTZTR7HG2nvcGnrvFzsnqfXIqwl6QkvtEJXLGVt1LLGWMyRBlwHZCSU",
+      "description": "Synthetic TEST key for the examples only. Never trust it for real content.",
+      "not_before": "2026-09-25T00:00:00Z",
+      "not_after": "2099-12-31T00:00:00Z"
+    }
+  ]
+}

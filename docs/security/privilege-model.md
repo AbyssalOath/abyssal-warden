@@ -1,8 +1,9 @@
 # Privilege model
 
-**Status: design.** Only the unprivileged CLI exists. This document defines
-the rules the service, IPC and GUI must follow when they are built. An ADR is
-recorded before implementation.
+**Status: implemented on Linux** ([ADR-0018](../architecture/decisions/0018-service-and-ipc.md),
+[user guide](../user/service.md)); Windows follows in Phase 8. Where the
+implementation differs from the original design, this document states the
+implemented behaviour and the ADR records why.
 
 ## Principles
 
@@ -19,54 +20,62 @@ recorded before implementation.
 4. **No network listener.** There is no TCP/HTTP API on localhost or
    anywhere else.
 
-## Transport and authentication (planned)
+## Transport and authentication
 
 | Platform | Transport | Peer authentication |
 |---|---|---|
-| Linux | Unix domain socket in `/run/abyssal-warden/`, directory 0750 root:`abyssal-warden` | `SO_PEERCRED` (uid/gid/pid) checked on every connection |
-| Windows | Named pipe with an explicit DACL (SYSTEM, Administrators, Interactive Users: connect), `PIPE_REJECT_REMOTE_CLIENTS` | Client token via `ImpersonateNamedPipeClient` / `GetNamedPipeClientProcessId` |
+| Linux (implemented) | Unix stream socket `/run/abyssal-warden/wardend.sock`, 0666 (or 0660 with `socket_group`); every request is authorised | `SO_PEERCRED` (uid) captured by the kernel at connect |
+| Windows (Phase 8) | Named pipe with an explicit DACL (SYSTEM, Administrators, Interactive Users: connect), `PIPE_REJECT_REMOTE_CLIENTS` | Client token via `ImpersonateNamedPipeClient` / `GetNamedPipeClientProcessId` |
 
-Messages use a versioned, size-limited schema (`warden-ipc`, planned). The
-service rejects unknown request types, oversized messages and malformed
-fields, and closes idle connections.
+Messages use the versioned, size-limited schema in `warden-ipc`. The
+service rejects unknown request types, unknown fields, oversized messages
+and malformed arguments, and closes idle connections.
 
-## Authorisation matrix (planned)
+## Authorisation matrix
 
 | Action | Unprivileged local user | Administrator / root |
 |---|---|---|
-| Scan paths the caller can read | allowed (in-process, no service needed) | allowed |
-| Ask the service to scan paths the caller cannot read | denied | allowed |
-| View own scan history | allowed | allowed |
-| View all scan history, audit log | denied | allowed |
-| Quarantine a file | denied, unless policy allows users to quarantine files they own | allowed, audit-logged |
-| Restore from quarantine | denied | allowed, with confirmation, audit-logged |
-| Permanently delete | denied | allowed, with confirmation, audit-logged |
-| Change schedules, exclusions, policy | denied | allowed, audit-logged |
-| Trigger database update | allowed (the update itself is verified) | allowed |
+| Scan paths | allowed; the scan runs **as the caller**, so it reads only what they can | allowed; runs as the scanner account (reads everything) |
+| View, fetch reports of, cancel jobs | own jobs only (others' are "not found") | all |
+| Quarantine automatically after a scan | denied | allowed, audit-logged with the requester |
+| List, restore, delete quarantined items | denied | allowed, audit-logged with the requester (delete needs `--yes` in the CLI) |
+| System check, start a schedule, verify the audit log | denied | allowed |
+| Change schedules, policy | only by editing the root-owned configuration | same |
+| Trigger database update | planned (updater) | planned |
 
-On Linux, administrator actions are authorised with polkit. On Windows,
-membership of Administrators is checked on the client token. The GUI never
-elevates itself.
+Administrators are root, `admin_users` and members of `admin_group`
+(`/etc/group`). polkit is not used yet (see ADR-0018). On Windows,
+membership of Administrators will be checked on the client token. The GUI
+never elevates itself.
 
-## Service hardening checklist (planned)
+## Service hardening
 
-* Linux systemd unit: `NoNewPrivileges=yes`, `ProtectSystem=strict` with
-  explicit `ReadWritePaths` for state and quarantine, `PrivateTmp=yes`,
-  `ProtectKernelModules=yes`, `RestrictAddressFamilies=AF_UNIX`,
-  `SystemCallFilter=@system-service`, `CapabilityBoundingSet` limited to what
-  scanning and remediation need (e.g. `CAP_DAC_READ_SEARCH`, `CAP_FOWNER`).
+* Linux systemd unit (`packaging/linux/abyssal-wardend.service`,
+  implemented): `NoNewPrivileges=yes`, `ProtectSystem=full`, kernel
+  protections, `RestrictAddressFamilies=AF_UNIX AF_NETLINK`,
+  `SystemCallFilter=@system-service`, `CapabilityBoundingSet` limited to
+  reading, quarantine, identity switching, killing and process inspection.
+  *Changed from the design:* `ProtectSystem=strict` and `PrivateTmp` would
+  hide or freeze the files the scanner must see and quarantine; the
+  quarantine policy already never touches `/usr`, `/boot` or `/etc`, which
+  `ProtectSystem=full` makes read-only.
 * Windows: service SID type restricted, no `SeDebugPrivilege` unless process
   scanning needs it (documented when it does). Protected-process
   registration requires Microsoft programmes (see
   [windows.md](../platform/windows.md)).
-* Scanning parsers may run in a lower-privileged child process
-  (seccomp/landlock on Linux, AppContainer on Windows), with the privileged
-  parent doing only file-handle brokering and remediation.
+* **Implemented (Linux):** parsers run in a lower-privileged child process
+  (the scanner account with only `CAP_DAC_READ_SEARCH`, or the requesting
+  user with no capabilities, `no_new_privs`, via `setpriv`); the privileged
+  parent only reads the report and performs remediation.
+  Planned: seccomp/landlock inside the child; AppContainer on Windows.
 
-## Testing requirements (when implemented)
+## Testing
 
-* Every IPC request type: unauthenticated, unauthorised and malformed variants
-  are rejected (unit and integration tests).
-* Fuzzing of the IPC decoder.
-* Tests that a non-admin client cannot trigger quarantine, restore, delete or
-  policy changes.
+* Every request type against both roles (the authorisation matrix unit
+  test); unknown operations, unknown fields, wrong versions, invalid
+  arguments and oversized frames against a running daemon.
+* The `ipc-decode` fuzz target (decoding, validation, authorisation).
+* A running daemon refuses quarantine, restore, delete, system checks,
+  schedules and audit verification to non-administrators, and runs their
+  scans with their own identity.
+* The privilege drop itself is verified in a user namespace (see ADR-0018).

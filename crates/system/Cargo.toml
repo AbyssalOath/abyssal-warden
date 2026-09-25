@@ -1,0 +1,35 @@
+[package]
+name = "warden-system"
+description = "Abyssal Warden system checks: persistence inventory, heuristics and integrity checks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+warden-core.workspace = true
+warden-heuristics.workspace = true
+md-5 = "0.10"
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1", features = ["fs", "process"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+
+[dev-dependencies]
+md-5 = "0.10"
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

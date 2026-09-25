@@ -4,12 +4,17 @@
 //! * 0 - scan completed, no findings, every entry processed
 //! * 1 - one or more findings
 //! * 2 - usage, configuration or fatal error
-//! * 3 - no findings, but some entries could not be scanned
+//! * 3 - no findings, but coverage is incomplete (entries could not be
+//!   scanned, or the scan time limit was reached)
 //! * 130 - cancelled
 
 mod content;
+mod content_cmd;
 mod output;
+mod paths;
 mod quarantine;
+mod service_cmd;
+mod system_cmd;
 
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -18,15 +23,15 @@ use std::time::{Duration, Instant};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use warden_core::{
-    CancellationToken, Detector, ScanConfig, ScanLimits, ScanReport, ScanStats, ScanStatus,
-    SymlinkPolicy,
+    ArchiveLimits, CancellationToken, Detector, RemediationStatus, ScanConfig, ScanLimits,
+    ScanReport, ScanStats, ScanStatus, SymlinkPolicy,
 };
 use warden_engine::{HashFileError, ProgressEvent, Scanner, hash_file};
 
-const EXIT_FINDINGS: u8 = 1;
+pub(crate) const EXIT_FINDINGS: u8 = 1;
 pub(crate) const EXIT_ERROR: u8 = 2;
-const EXIT_INCOMPLETE: u8 = 3;
-const EXIT_CANCELLED: u8 = 130;
+pub(crate) const EXIT_INCOMPLETE: u8 = 3;
+pub(crate) const EXIT_CANCELLED: u8 = 130;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -42,7 +47,8 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Scan files and directories.
-    Scan(ScanArgs),
+    // Boxed: the scan arguments dwarf every other command's.
+    Scan(Box<ScanArgs>),
     /// Print the SHA-256 of files (same hardened reader as `scan`).
     Hash(HashArgs),
     /// Work with signature databases.
@@ -53,6 +59,14 @@ enum Command {
     Yara(YaraCommand),
     /// Quarantine, restore and delete files (Linux only).
     Quarantine(quarantine::QuarantineArgs),
+    /// Create and verify signed content bundles.
+    #[command(subcommand)]
+    Content(content_cmd::ContentCommand),
+    /// Inventory persistence and check system integrity (Linux).
+    SystemCheck(Box<system_cmd::SystemCheckArgs>),
+    /// Talk to the local service (abyssal-wardend): scans, jobs, schedules,
+    /// quarantine.
+    Service(service_cmd::ServiceArgs),
 }
 
 #[derive(Args, Debug)]
@@ -69,6 +83,8 @@ struct ScanArgs {
     yara: Vec<PathBuf>,
     #[command(flatten)]
     trust: content::TrustArgs,
+    #[command(flatten)]
+    bundles: content::BundleArgs,
     /// Output format.
     #[arg(long, value_enum, default_value_t = Format::Human)]
     format: Format,
@@ -89,6 +105,21 @@ struct ScanArgs {
     #[arg(long, value_name = "SECS", default_value_t = ScanLimits::DEFAULT_FILE_TIMEOUT_MS / 1000,
           value_parser = clap::value_parser!(u64).range(1..=86_400))]
     file_timeout: u64,
+    /// Do not expand archives (ZIP and ZIP-based formats such as JAR, APK
+    /// and Office documents).
+    #[arg(long)]
+    no_archives: bool,
+    /// Maximum archive nesting to expand (1 = members of top-level archives).
+    #[arg(long, value_name = "N", default_value_t = ArchiveLimits::DEFAULT_MAX_DEPTH,
+          value_parser = clap::value_parser!(u32).range(1..=16))]
+    archive_max_depth: u32,
+    /// Total bytes decompressed per file on disk (decompression-bomb budget).
+    #[arg(long, value_name = "SIZE", default_value = "1G", value_parser = parse_size)]
+    archive_max_total: u64,
+    /// Stop the whole scan after this many seconds and report partial
+    /// results [default: no limit].
+    #[arg(long, value_name = "SECS", value_parser = clap::value_parser!(u64).range(1..=31_536_000))]
+    scan_timeout: Option<u64>,
     /// Maximum directory depth below each scan path.
     #[arg(long, value_name = "N", default_value_t = ScanLimits::DEFAULT_MAX_DEPTH)]
     max_depth: usize,
@@ -115,13 +146,27 @@ struct ScanArgs {
     /// directories). Nothing else is ever remediated automatically.
     #[arg(long)]
     quarantine: bool,
-    /// Quarantine store for --quarantine.
-    #[arg(long, value_name = "DIR", requires = "quarantine")]
+    /// With --quarantine, also stop processes running the quarantined files
+    /// (paused, then killed once the file is stored; Linux).
+    #[arg(long, requires = "quarantine")]
+    kill_processes: bool,
+    /// Quarantine store (for --quarantine, and whose allow-list is applied)
+    /// [default: per user, or /var/lib/abyssal-warden/quarantine as root].
+    #[arg(long, value_name = "DIR")]
     quarantine_store: Option<PathBuf>,
+    /// Ignore the allow-list of restored files: report them like any other
+    /// finding.
+    #[arg(long)]
+    no_allowlist: bool,
+    /// Also run the heuristic detectors (file names, PE and ELF structure,
+    /// scripts). Their findings are `heuristic` or `suspicious`, need review,
+    /// and are never quarantined automatically.
+    #[arg(long)]
+    heuristics: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum Format {
+pub(crate) enum Format {
     Human,
     Json,
 }
@@ -156,26 +201,30 @@ enum YaraCommand {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Scan(args) => run_scan(args),
+        Command::Scan(args) => run_scan(*args),
         Command::Hash(args) => run_hash(&args),
         Command::Signatures(SignaturesCommand::Validate { file, trust }) => {
             run_validate(&file, &trust)
         }
         Command::Yara(YaraCommand::Validate { paths, trust }) => run_yara_validate(&paths, &trust),
         Command::Quarantine(args) => quarantine::run(args),
+        Command::Content(cmd) => content_cmd::run(cmd),
+        Command::SystemCheck(args) => system_cmd::run(*args),
+        Command::Service(args) => service_cmd::run(args),
     }
 }
 
 fn run_scan(args: ScanArgs) -> ExitCode {
     // Any failure to load or verify content aborts: never scan with a
     // silently reduced detector set.
-    let detectors = match load_detectors(&args) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error: {}", output::sanitize(&e));
-            return ExitCode::from(EXIT_ERROR);
-        }
-    };
+    let (detectors, bundle_infos) =
+        match load_detectors(&args.signatures, &args.yara, &args.trust, &args.bundles) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("error: {}", output::sanitize(&e));
+                return ExitCode::from(EXIT_ERROR);
+            }
+        };
 
     let mut config = ScanConfig::new(args.paths.clone());
     config.excludes = args.excludes.clone();
@@ -192,6 +241,10 @@ fn run_scan(args: ScanArgs) -> ExitCode {
     config.limits.max_depth = args.max_depth;
     config.limits.max_content_size = args.max_content_size;
     config.limits.file_timeout_ms = args.file_timeout * 1000;
+    config.limits.scan_timeout_ms = args.scan_timeout.map(|s| s * 1000);
+    config.limits.archives.enabled = !args.no_archives;
+    config.limits.archives.max_depth = args.archive_max_depth;
+    config.limits.archives.max_total_bytes = args.archive_max_total;
     if let Some(n) = args.threads {
         config.workers = n;
     }
@@ -205,6 +258,9 @@ fn run_scan(args: ScanArgs) -> ExitCode {
     };
     for d in detectors {
         scanner.add_detector(d);
+    }
+    if args.heuristics {
+        scanner.add_detector(Box::new(warden_heuristics::HeuristicsDetector::new()));
     }
     if scanner.detectors().is_empty() {
         eprintln!(
@@ -228,12 +284,21 @@ fn run_scan(args: ScanArgs) -> ExitCode {
             return ExitCode::from(EXIT_ERROR);
         }
     };
+    report.content_bundles = bundle_infos;
+    content_warnings(&args.signatures, &args.yara, &mut report);
+    if !args.no_allowlist
+        && let Err(e) = quarantine::apply_allowlist(&mut report, args.quarantine_store.as_deref())
+    {
+        eprintln!("error: {}", output::sanitize(&e));
+        return ExitCode::from(EXIT_ERROR);
+    }
     if args.quarantine {
         if report.status == ScanStatus::Completed {
             quarantine::remediate_report(
                 &mut report,
                 args.quarantine_store.as_deref(),
                 args.max_file_size,
+                args.kill_processes,
             );
         } else {
             eprintln!("warning: the scan did not complete; nothing was quarantined");
@@ -266,10 +331,15 @@ fn run_scan(args: ScanArgs) -> ExitCode {
     ExitCode::from(exit_code(&report))
 }
 
-fn exit_code(report: &ScanReport) -> u8 {
+pub(crate) fn exit_code(report: &ScanReport) -> u8 {
     if report.status == ScanStatus::Cancelled {
         EXIT_CANCELLED
-    } else if report.stats.findings > 0 {
+    } else if report
+        .findings
+        .iter()
+        .any(|f| f.remediation_status != RemediationStatus::Allowed)
+        || report.truncated.findings_omitted > 0
+    {
         EXIT_FINDINGS
     } else if !report.is_complete() {
         EXIT_INCOMPLETE
@@ -299,7 +369,7 @@ fn default_excludes(roots: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
-fn install_interrupt_handler(token: &CancellationToken) {
+pub(crate) fn install_interrupt_handler(token: &CancellationToken) {
     let token = token.clone();
     let result = ctrlc::set_handler(move || {
         if token.is_cancelled() {
@@ -319,7 +389,7 @@ fn install_interrupt_handler(token: &CancellationToken) {
 /// Write via a temporary file in the destination directory, then rename.
 /// The rename replaces a symlink at `path` rather than writing through it,
 /// and readers never see a partially written report.
-fn write_atomically(path: &Path, data: &[u8]) -> io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, data: &[u8]) -> io::Result<()> {
     let dir = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
@@ -408,16 +478,61 @@ fn run_hash(args: &HashArgs) -> ExitCode {
     }
 }
 
-fn load_detectors(args: &ScanArgs) -> Result<Vec<Box<dyn Detector>>, String> {
-    let trust = content::Trust::from_args(&args.trust)?;
-    let mut detectors: Vec<Box<dyn Detector>> = Vec::new();
-    for path in &args.signatures {
+/// Detectors from bundles (recording their sequences) and from individually
+/// signed files, plus the bundle information for the report.
+pub(crate) type LoadedContent = (Vec<Box<dyn Detector>>, Vec<warden_core::ContentBundleInfo>);
+
+pub(crate) fn load_detectors(
+    signatures: &[PathBuf],
+    yara: &[PathBuf],
+    trust_args: &content::TrustArgs,
+    bundles: &content::BundleArgs,
+) -> Result<LoadedContent, String> {
+    let mut trust = content::Trust::from_args(trust_args)?;
+    // Revocations learned from accepted bundles also apply to individually
+    // signed files.
+    if let Some(state) = bundles.state_path() {
+        trust.apply_recorded_revocations(&state)?;
+    }
+    let loaded = content::load_bundles(bundles, &trust, true)?;
+    let mut detectors = loaded.detectors;
+    for path in signatures {
         detectors.push(Box::new(content::load_hash_db(path, &trust)?));
     }
-    if !args.yara.is_empty() {
-        detectors.push(Box::new(content::load_yara(&args.yara, &trust)?));
+    if !yara.is_empty() {
+        detectors.push(Box::new(content::load_yara(yara, &trust)?));
     }
-    Ok(detectors)
+    Ok((detectors, loaded.infos))
+}
+
+/// Report warnings about how detection content was obtained.
+pub(crate) fn content_warnings(signatures: &[PathBuf], yara: &[PathBuf], report: &mut ScanReport) {
+    if !signatures.is_empty() || !yara.is_empty() {
+        report.warnings.push(
+            "Content loaded from individually signed files (--signatures/--yara) has no \
+             rollback or expiry protection; prefer signed content bundles (--content)."
+                .to_owned(),
+        );
+    }
+    let now = time::OffsetDateTime::now_utc();
+    for b in &report.content_bundles {
+        let expires = b
+            .expires
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default();
+        if b.expired {
+            report.warnings.push(format!(
+                "Content bundle {:?} (sequence {}) expired at {expires} and was used only \
+                 because --allow-expired was given; detection may be out of date.",
+                b.name, b.sequence
+            ));
+        } else if b.expires - now < time::Duration::days(7) {
+            report.warnings.push(format!(
+                "Content bundle {:?} expires at {expires}; update it soon.",
+                b.name
+            ));
+        }
+    }
 }
 
 fn signer_text(db: Option<&warden_core::DatabaseInfo>) -> String {
