@@ -1,8 +1,13 @@
-//! The Unix socket server: peer authentication with `SO_PEERCRED`, per
-//! request validation and authorisation, dispatch.
+//! The service endpoint and request dispatch.
+//!
+//! * **Unix:** a Unix stream socket; the peer's uid comes from the kernel
+//!   (`SO_PEERCRED`) when it connects.
+//! * **Windows:** a named pipe with an explicit security descriptor that
+//!   refuses remote clients and lets only SYSTEM and Administrators create
+//!   instances; the client's identity comes from its token (impersonation).
+//!
+//! Every request is then validated and authorised (`warden_ipc::policy`).
 
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,7 +20,6 @@ use warden_ipc::{
 };
 use warden_remediation::{QuarantineId, QuarantineStore};
 
-use crate::accounts::Accounts;
 use crate::config::ServiceConfig;
 use crate::jobs::{JobSpec, Manager, RunAs};
 use crate::store::Store;
@@ -24,6 +28,15 @@ use crate::{audit, log, sanitize, schedule};
 const MAX_CONNECTIONS: usize = 64;
 const MAX_REQUESTS_PER_CONNECTION: usize = 1000;
 const IO_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// An authenticated client.
+#[derive(Clone, Debug)]
+pub(crate) struct Peer {
+    pub(crate) caller: Caller,
+    /// Unix: the identity a scan for this client runs as.
+    #[cfg(unix)]
+    pub(crate) ids: (u32, u32),
+}
 
 pub(crate) struct Ctx {
     pub(crate) cfg: Arc<ServiceConfig>,
@@ -50,7 +63,13 @@ impl Ctx {
 }
 
 /// Creates the listening socket, refusing to take over a live one.
-pub(crate) fn bind(cfg: &ServiceConfig, accounts: &Accounts) -> Result<UnixListener, String> {
+#[cfg(unix)]
+pub(crate) fn bind(
+    cfg: &ServiceConfig,
+    accounts: &crate::accounts::Accounts,
+) -> Result<std::os::unix::net::UnixListener, String> {
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+    use std::os::unix::net::{UnixListener, UnixStream};
     let path = &cfg.socket;
     let dir = path.parent().ok_or("socket path has no directory")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -87,26 +106,16 @@ pub(crate) fn bind(cfg: &ServiceConfig, accounts: &Accounts) -> Result<UnixListe
 }
 
 /// Accepts connections until `stop` is set.
-pub(crate) fn serve(listener: &UnixListener, ctx: &Arc<Ctx>, stop: &AtomicBool) {
+#[cfg(unix)]
+pub(crate) fn serve(
+    listener: &std::os::unix::net::UnixListener,
+    ctx: &Arc<Ctx>,
+    stop: &AtomicBool,
+) {
     let active = Arc::new(AtomicUsize::new(0));
     while !stop.load(Ordering::SeqCst) {
         match listener.accept() {
-            Ok((stream, _)) => {
-                if active.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
-                    continue; // dropped: closes the connection
-                }
-                active.fetch_add(1, Ordering::SeqCst);
-                let (ctx, active) = (Arc::clone(ctx), Arc::clone(&active));
-                let spawned = std::thread::Builder::new()
-                    .name("client".into())
-                    .spawn(move || {
-                        handle(stream, &ctx);
-                        active.fetch_sub(1, Ordering::SeqCst);
-                    });
-                if spawned.is_err() {
-                    log("cannot start a client thread");
-                }
-            }
+            Ok((stream, _)) => spawn_client(&active, ctx, move |ctx| handle_unix(stream, ctx)),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(100))
             }
@@ -118,7 +127,67 @@ pub(crate) fn serve(listener: &UnixListener, ctx: &Arc<Ctx>, stop: &AtomicBool) 
     }
 }
 
-fn handle(mut stream: UnixStream, ctx: &Ctx) {
+fn spawn_client(
+    active: &Arc<AtomicUsize>,
+    ctx: &Arc<Ctx>,
+    work: impl FnOnce(&Ctx) + Send + 'static,
+) {
+    if active.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
+        return; // dropped: closes the connection
+    }
+    active.fetch_add(1, Ordering::SeqCst);
+    let (ctx, active) = (Arc::clone(ctx), Arc::clone(active));
+    let spawned = std::thread::Builder::new()
+        .name("client".into())
+        .spawn(move || {
+            work(&ctx);
+            active.fetch_sub(1, Ordering::SeqCst);
+        });
+    if spawned.is_err() {
+        log("cannot start a client thread");
+    }
+}
+
+/// Serves requests on one connection. `identify` is called after the
+/// first request has been read (Windows needs data before impersonation).
+fn converse<S: std::io::Read + std::io::Write>(
+    stream: &mut S,
+    ctx: &Ctx,
+    mut identify: impl FnMut(&S) -> Option<Peer>,
+    mut progress: impl FnMut(),
+) {
+    let mut peer: Option<Peer> = None;
+    for _ in 0..MAX_REQUESTS_PER_CONNECTION {
+        let response = match warden_ipc::read_frame::<Request>(stream, MAX_REQUEST) {
+            Ok(req) => {
+                if peer.is_none() {
+                    peer = identify(stream);
+                }
+                let Some(p) = peer.as_ref() else {
+                    log("cannot identify a client");
+                    return;
+                };
+                dispatch(ctx, p, &req)
+            }
+            Err(FrameError::Closed | FrameError::Io(_)) => return,
+            Err(e) => {
+                let _ = warden_ipc::write_frame(
+                    stream,
+                    &Response::error(0, Rejection::new(ErrorCode::BadRequest, e.to_string())),
+                    MAX_RESPONSE,
+                );
+                return;
+            }
+        };
+        if warden_ipc::write_frame(stream, &response, MAX_RESPONSE).is_err() {
+            return;
+        }
+        progress();
+    }
+}
+
+#[cfg(unix)]
+fn handle_unix(mut stream: std::os::unix::net::UnixStream, ctx: &Ctx) {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
@@ -131,32 +200,106 @@ fn handle(mut stream: UnixStream, ctx: &Ctx) {
         }
     };
     let uid = cred.uid.as_raw();
-    let accounts = Accounts::load();
-    let caller = Caller {
-        uid,
-        admin: accounts.is_admin(uid, &ctx.cfg),
+    let accounts = crate::accounts::Accounts::load();
+    let peer = Peer {
+        caller: Caller {
+            principal: uid.to_string(),
+            admin: accounts.is_admin(uid, &ctx.cfg),
+        },
+        ids: (uid, accounts.user(uid).map_or(cred.gid.as_raw(), |u| u.gid)),
     };
-    let gid = accounts.user(uid).map_or(cred.gid.as_raw(), |u| u.gid);
-    for _ in 0..MAX_REQUESTS_PER_CONNECTION {
-        let response = match warden_ipc::read_frame::<Request>(&mut stream, MAX_REQUEST) {
-            Ok(req) => dispatch(ctx, caller, gid, &req),
-            Err(FrameError::Closed) => return,
-            Err(FrameError::Io(_)) => return,
-            Err(e) => {
-                let _ = warden_ipc::write_frame(
-                    &mut stream,
-                    &Response::error(0, Rejection::new(ErrorCode::BadRequest, e.to_string())),
-                    MAX_RESPONSE,
-                );
-                return;
-            }
-        };
-        if warden_ipc::write_frame(&mut stream, &response, MAX_RESPONSE).is_err() {
-            return;
-        }
-    }
+    converse(&mut stream, ctx, |_| Some(peer.clone()), || {});
 }
 
+/// The pipe's security: SYSTEM, Administrators and the owner (the service)
+/// have full control; authenticated users may only read and write data,
+/// not create pipe instances. Remote clients are refused by the pipe mode.
+#[cfg(windows)]
+pub(crate) const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)(A;;0x12008b;;;AU)";
+
+/// Creates the pipe; fails if the name exists (another instance, or a
+/// process squatting the name).
+#[cfg(windows)]
+pub(crate) fn bind_pipe(name: &str) -> Result<warden_winsec::PipeListener, String> {
+    warden_winsec::PipeListener::bind(name, PIPE_SDDL)
+        .map_err(|e| format!("{name} is in use: {e} (is another instance running?)"))
+}
+
+/// Accepts pipe clients until `stop` is set.
+#[cfg(windows)]
+pub(crate) fn serve_pipe(
+    mut listener: warden_winsec::PipeListener,
+    name: &str,
+    ctx: &Arc<Ctx>,
+    stop: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    // `accept` blocks; when asked to stop, connect once to wake it.
+    let waker = {
+        let (stop, name) = (Arc::clone(stop), name.to_owned());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            let _ = std::fs::OpenOptions::new().read(true).open(&name);
+        })
+    };
+    let active = Arc::new(AtomicUsize::new(0));
+    while !stop.load(Ordering::SeqCst) {
+        match listener.accept() {
+            Ok(conn) => {
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                spawn_client(&active, ctx, move |ctx| handle_pipe(conn, ctx));
+            }
+            Err(e) => {
+                log(&format!("accept failed: {e}"));
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    let _ = waker.join();
+    Ok(())
+}
+
+#[cfg(windows)]
+fn handle_pipe(mut conn: warden_winsec::PipeConnection, ctx: &Ctx) {
+    use std::sync::mpsc;
+    // Synchronous pipes have no read timeout: a watchdog disconnects a
+    // client that stays idle longer than IO_TIMEOUT.
+    let Ok(disconnector) = conn.disconnector() else {
+        return;
+    };
+    let (tick, ticks) = mpsc::channel::<()>();
+    let watchdog = std::thread::spawn(move || {
+        loop {
+            match ticks.recv_timeout(IO_TIMEOUT) {
+                Ok(()) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    disconnector.disconnect();
+                    return;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    });
+    let identify = |conn: &warden_winsec::PipeConnection| {
+        conn.client()
+            .map_err(|e| log(&format!("cannot identify a client: {e}")))
+            .ok()
+            .map(|who| Peer {
+                caller: Caller {
+                    principal: who.sid,
+                    admin: who.admin,
+                },
+            })
+    };
+    converse(&mut conn, ctx, identify, || {
+        let _ = tick.send(());
+    });
+    drop(tick);
+    let _ = watchdog.join();
+}
 fn not_found() -> Rejection {
     Rejection::new(ErrorCode::NotFound, "no such job")
 }
@@ -165,19 +308,20 @@ fn internal(e: impl std::fmt::Display) -> Rejection {
     Rejection::new(ErrorCode::Internal, sanitize(&e.to_string()))
 }
 
-pub(crate) fn dispatch(ctx: &Ctx, caller: Caller, gid: u32, req: &Request) -> Response {
+pub(crate) fn dispatch(ctx: &Ctx, peer: &Peer, req: &Request) -> Response {
+    let caller = &peer.caller;
     let result = req
         .validate()
         .and_then(|()| policy::authorize(caller, &req.op))
-        .and_then(|()| execute(ctx, caller, gid, &req.op));
+        .and_then(|()| execute(ctx, peer, &req.op));
     match result {
         Ok(reply) => Response::new(req.id, reply),
         Err(r) => {
             if r.code == ErrorCode::Unauthorized {
                 log(&format!(
-                    "denied {:?} for uid {}",
+                    "denied {:?} for {}",
                     op_name(&req.op),
-                    caller.uid
+                    caller.principal
                 ));
             }
             Response::error(req.id, r)
@@ -204,9 +348,9 @@ fn op_name(op: &Op) -> &'static str {
     }
 }
 
-fn open_quarantine(ctx: &Ctx, caller: Caller) -> Result<QuarantineStore, Rejection> {
+fn open_quarantine(ctx: &Ctx, caller: &Caller) -> Result<QuarantineStore, Rejection> {
     let mut store = QuarantineStore::open(&ctx.cfg.quarantine_store).map_err(internal)?;
-    store.on_behalf_of(Some(caller.uid));
+    store.on_behalf_of(Some(caller.principal.clone()));
     Ok(store)
 }
 
@@ -215,8 +359,32 @@ fn parse_id(id: &str) -> Result<QuarantineId, Rejection> {
         .map_err(|_| Rejection::new(ErrorCode::BadRequest, "invalid quarantine id"))
 }
 
-fn execute(ctx: &Ctx, caller: Caller, gid: u32, op: &Op) -> Result<Reply, Rejection> {
-    let visible = |owner: u32| policy::can_access_job(caller, owner);
+/// Where a scan for this client runs: as the client on Unix; on Windows
+/// the service cannot yet run a job with the client's identity, so
+/// non-administrators scan with the CLI instead.
+fn scan_identity(peer: &Peer) -> Result<RunAs, Rejection> {
+    if !policy::scan_as_caller(&peer.caller) {
+        return Ok(RunAs::Service);
+    }
+    #[cfg(unix)]
+    {
+        Ok(RunAs::Caller {
+            uid: peer.ids.0,
+            gid: peer.ids.1,
+        })
+    }
+    #[cfg(windows)]
+    {
+        Err(Rejection::new(
+            ErrorCode::Unsupported,
+            "on Windows the service scans only for administrators; run `abyssal-warden scan` yourself",
+        ))
+    }
+}
+
+fn execute(ctx: &Ctx, peer: &Peer, op: &Op) -> Result<Reply, Rejection> {
+    let caller = &peer.caller;
+    let visible = |owner: &str| policy::can_access_job(caller, owner);
     Ok(match op {
         Op::Ping {} => Reply::Pong {
             server_version: env!("CARGO_PKG_VERSION").into(),
@@ -230,7 +398,7 @@ fn execute(ctx: &Ctx, caller: Caller, gid: u32, op: &Op) -> Result<Reply, Reject
                 jobs_running: running,
                 jobs_queued: queued,
                 schedules: ctx.cfg.schedules.len() as u32,
-                caller_uid: caller.uid,
+                caller: caller.principal.clone(),
                 caller_is_admin: caller.admin,
                 last_audit: if caller.admin {
                     ctx.audit
@@ -248,14 +416,7 @@ fn execute(ctx: &Ctx, caller: Caller, gid: u32, op: &Op) -> Result<Reply, Reject
             no_archives,
             quarantine,
         } => {
-            let run_as = if policy::scan_as_caller(caller) {
-                RunAs::Caller {
-                    uid: caller.uid,
-                    gid,
-                }
-            } else {
-                RunAs::Service
-            };
+            let run_as = scan_identity(peer)?;
             let spec = JobSpec {
                 kind: JobKind::Scan,
                 paths: paths.clone(),
@@ -264,8 +425,8 @@ fn execute(ctx: &Ctx, caller: Caller, gid: u32, op: &Op) -> Result<Reply, Reject
                 quarantine: *quarantine,
                 run_as,
             };
-            let job = ctx.manager.submit(caller.uid, None, spec)?;
-            log(&format!("uid {} started scan job {job}", caller.uid));
+            let job = ctx.manager.submit(caller.principal.clone(), None, spec)?;
+            log(&format!("{} started scan job {job}", caller.principal));
             Reply::JobStarted { job }
         }
         Op::SystemCheck { heuristics } => {
@@ -278,18 +439,18 @@ fn execute(ctx: &Ctx, caller: Caller, gid: u32, op: &Op) -> Result<Reply, Reject
                 run_as: RunAs::Service,
             };
             Reply::JobStarted {
-                job: ctx.manager.submit(caller.uid, None, spec)?,
+                job: ctx.manager.submit(caller.principal.clone(), None, spec)?,
             }
         }
         Op::Jobs {} => Reply::Jobs {
-            jobs: ctx.manager.list(|j| visible(j.owner_uid)),
+            jobs: ctx.manager.list(|j| visible(&j.owner)),
         },
         Op::Job { job } => match ctx.manager.get(*job) {
-            Some(j) if visible(j.owner_uid) => Reply::Job(Box::new(j)),
+            Some(j) if visible(&j.owner) => Reply::Job(Box::new(j)),
             _ => return Err(not_found()),
         },
         Op::Report { job } => match ctx.manager.get(*job) {
-            Some(j) if visible(j.owner_uid) => match ctx.manager.report(*job).map_err(internal)? {
+            Some(j) if visible(&j.owner) => match ctx.manager.report(*job).map_err(internal)? {
                 Some(report) => Reply::Report { job: *job, report },
                 None => {
                     return Err(Rejection::new(
@@ -301,7 +462,7 @@ fn execute(ctx: &Ctx, caller: Caller, gid: u32, op: &Op) -> Result<Reply, Reject
             _ => return Err(not_found()),
         },
         Op::Cancel { job } => match ctx.manager.get(*job) {
-            Some(j) if visible(j.owner_uid) => {
+            Some(j) if visible(&j.owner) => {
                 ctx.manager.cancel(*job)?;
                 Reply::Done {
                     message: format!("cancelling job {job}"),
@@ -368,14 +529,14 @@ fn execute(ctx: &Ctx, caller: Caller, gid: u32, op: &Op) -> Result<Reply, Reject
                     .map_err(internal)?;
                 message.push_str("; allow-listed");
             }
-            log(&format!("uid {} restored {qid}", caller.uid));
+            log(&format!("{} restored {qid}", caller.principal));
             Reply::Done { message }
         }
         Op::QuarantineDelete { id } => {
             let mut store = open_quarantine(ctx, caller)?;
             let qid = parse_id(id)?;
             store.delete(&qid).map_err(internal)?;
-            log(&format!("uid {} deleted {qid}", caller.uid));
+            log(&format!("{} deleted {qid}", caller.principal));
             Reply::Done {
                 message: format!("deleted {qid}"),
             }

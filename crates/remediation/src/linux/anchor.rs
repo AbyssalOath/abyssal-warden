@@ -54,23 +54,13 @@ impl AnchorTarget {
     }
 }
 
-/// The message for one audit entry.
+/// The message for one audit entry: syslog header plus the shared anchor
+/// text.
 pub(super) fn message(seq: u64, hash: &str, chain: &str, action: &str, outcome: &str) -> String {
-    // Keep only characters that cannot start a new field or line. The hash
-    // is 64 hex digits; the other fields are short fixed words.
-    let clean = |s: &str, max: usize| -> String {
-        s.chars()
-            .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .take(max)
-            .collect()
-    };
     format!(
-        "<{PRIORITY}>abyssal-warden[{}]: audit seq={seq} hash={} chain={} action={} outcome={}",
+        "<{PRIORITY}>abyssal-warden[{}]: {}",
         std::process::id(),
-        clean(hash, 64),
-        clean(chain, 16),
-        clean(action, 32),
-        clean(outcome, 32),
+        crate::common::anchor_text(seq, hash, chain, action, outcome)
     )
 }
 

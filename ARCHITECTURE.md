@@ -245,7 +245,7 @@ not just a code review.
 * **Every scan finishes, and every file is accounted for.** No file can hang
   a scan (watchdog), and queued work that was never scanned is reported, never
   counted as completed ([ADR-0009](docs/architecture/decisions/0009-stall-watchdog.md)).
-* **No `unsafe`.** `unsafe_code = "forbid"` applies to the whole workspace.
+* **No `unsafe`, except `warden-winsec`** (Windows FFI, ADR-0019). `unsafe_code = "forbid"` applies everywhere else.
   Release builds keep `panic = "unwind"` so detector panics can be isolated.
 * **The JSON report is the compatibility contract**, versioned by
   `REPORT_SCHEMA_VERSION`. The Rust API is internal until 1.0.

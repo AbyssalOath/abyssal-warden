@@ -84,7 +84,7 @@ pub(crate) fn start(
     manager: &Manager,
     store: &Store,
 ) -> Result<uuid::Uuid, warden_ipc::Rejection> {
-    let id = manager.submit(0, Some(s.name.clone()), spec(s))?;
+    let id = manager.submit(crate::service_principal(), Some(s.name.clone()), spec(s))?;
     let mut state = store.schedule_state();
     state.insert(s.name.clone(), OffsetDateTime::now_utc());
     if let Err(e) = store.save_schedule_state(&state) {

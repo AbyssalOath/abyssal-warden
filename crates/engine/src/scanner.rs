@@ -946,17 +946,30 @@ fn expand_archive<'d>(
     Ok(())
 }
 
+/// Windows `ERROR_SHARING_VIOLATION` and `ERROR_LOCK_VIOLATION`.
+fn is_locked(e: &io::Error) -> bool {
+    cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33))
+}
+
 fn io_issue(path: Option<&Path>, e: &io::Error) -> ScanIssue {
-    let kind = match e.kind() {
-        io::ErrorKind::PermissionDenied => IssueKind::PermissionDenied,
-        io::ErrorKind::NotFound => IssueKind::NotFound,
-        _ => IssueKind::Io,
+    let kind = if is_locked(e) {
+        IssueKind::Locked
+    } else {
+        match e.kind() {
+            io::ErrorKind::PermissionDenied => IssueKind::PermissionDenied,
+            io::ErrorKind::NotFound => IssueKind::NotFound,
+            _ => IssueKind::Io,
+        }
     };
     ScanIssue {
         path: path.map(ObservedPath::from_path),
         kind,
         detector: None,
-        message: e.to_string(),
+        message: if is_locked(e) {
+            format!("in use by another program that does not allow reading ({e})")
+        } else {
+            e.to_string()
+        },
         member: None,
     }
 }

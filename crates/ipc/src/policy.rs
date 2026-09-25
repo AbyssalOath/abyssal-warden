@@ -4,16 +4,18 @@
 use crate::{ErrorCode, Op, Rejection};
 
 /// An authenticated client.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Caller {
-    pub uid: u32,
-    /// Root, a configured administrator, or a member of the admin group.
+    /// uid (Unix) or SID (Windows), as the kernel reported it.
+    pub principal: String,
+    /// Unix: root, a configured administrator, or a member of the admin
+    /// group. Windows: an elevated administrator or SYSTEM.
     pub admin: bool,
 }
 
 /// Rejects operations the caller may not perform at all. Per-job access
 /// is checked separately with [`can_access_job`].
-pub fn authorize(caller: Caller, op: &Op) -> Result<(), Rejection> {
+pub fn authorize(caller: &Caller, op: &Op) -> Result<(), Rejection> {
     let admin_only = match op {
         Op::Ping {}
         | Op::Status {}
@@ -39,14 +41,14 @@ pub fn authorize(caller: Caller, op: &Op) -> Result<(), Rejection> {
     Ok(())
 }
 
-/// Whether the caller may see or cancel a job owned by `owner_uid`.
-pub fn can_access_job(caller: Caller, owner_uid: u32) -> bool {
-    caller.admin || caller.uid == owner_uid
+/// Whether the caller may see or cancel a job owned by `owner`.
+pub fn can_access_job(caller: &Caller, owner: &str) -> bool {
+    caller.admin || caller.principal == owner
 }
 
 /// Whether a scan for this caller runs with the caller's own identity
 /// (non-administrators) rather than the privileged scanner account.
-pub fn scan_as_caller(caller: Caller) -> bool {
+pub fn scan_as_caller(caller: &Caller) -> bool {
     !caller.admin
 }
 
@@ -58,11 +60,11 @@ mod tests {
     #[test]
     fn authorization_matrix() {
         let user = Caller {
-            uid: 1000,
+            principal: "1000".into(),
             admin: false,
         };
         let admin = Caller {
-            uid: 0,
+            principal: "0".into(),
             admin: true,
         };
         let job = Uuid::nil();
@@ -95,21 +97,26 @@ mod tests {
             Op::VerifyAudit {},
         ];
         for op in &everyone {
-            assert!(authorize(user, op).is_ok(), "{op:?}");
-            assert!(authorize(admin, op).is_ok(), "{op:?}");
+            assert!(authorize(&user, op).is_ok(), "{op:?}");
+            assert!(authorize(&admin, op).is_ok(), "{op:?}");
         }
         for op in &admins {
             assert_eq!(
-                authorize(user, op).unwrap_err().code,
+                authorize(&user, op).unwrap_err().code,
                 ErrorCode::Unauthorized,
                 "{op:?}"
             );
-            assert!(authorize(admin, op).is_ok(), "{op:?}");
+            assert!(authorize(&admin, op).is_ok(), "{op:?}");
         }
-        assert!(can_access_job(user, 1000));
-        assert!(!can_access_job(user, 1001));
-        assert!(can_access_job(admin, 1001));
-        assert!(scan_as_caller(user));
-        assert!(!scan_as_caller(admin));
+        assert!(can_access_job(&user, "1000"));
+        assert!(!can_access_job(&user, "1001"));
+        assert!(can_access_job(&admin, "1001"));
+        let windows_user = Caller {
+            principal: "S-1-5-21-1".into(),
+            admin: false,
+        };
+        assert!(!can_access_job(&windows_user, "S-1-5-21-2"));
+        assert!(scan_as_caller(&user));
+        assert!(!scan_as_caller(&admin));
     }
 }

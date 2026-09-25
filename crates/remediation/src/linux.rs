@@ -20,12 +20,11 @@
 //!    fsync the parent directory;
 //! 7. mark the record `quarantined`; append to the audit log.
 
-use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use rustix::fs::{
     self as rfs, AtFlags, CWD, FileType, FlockOperation, Mode, OFlags, RenameFlags, ResolveFlags,
@@ -38,27 +37,16 @@ use warden_core::{ObservedPath, Sha256Digest};
 
 use crate::allowlist::{ALLOWLIST_FILE, AllowEntry, AllowlistFile, MAX_ALLOWLIST_BYTES};
 use crate::audit::{AuditEntry, ChainHead, encode, verify_chain};
+use crate::common::{
+    CHUNK, DATA_MAGIC, KEY_LEN, MAX_RECORD_BYTES, Result, corrupt, io_err, split_checked,
+    xor_in_place,
+};
 use crate::policy::{is_protected_path, native_path};
 use crate::record::{hex, unhex};
 use crate::{
     ItemState, OriginalFile, QuarantineId, QuarantineRecord, QuarantineRequest,
     RECORD_FORMAT_VERSION, RecoveryAction, RemediationError,
 };
-
-const DATA_MAGIC: &[u8; 8] = b"AWQDATA1";
-const KEY_LEN: usize = 32;
-const CHUNK: usize = 64 * 1024;
-const MAX_RECORD_BYTES: u64 = 1024 * 1024;
-
-type Result<T> = std::result::Result<T, RemediationError>;
-
-fn io_err(op: &'static str, path: &Path, e: impl Into<io::Error>) -> RemediationError {
-    RemediationError::Io {
-        op,
-        path: path.to_owned(),
-        source: e.into(),
-    }
-}
 
 /// Points where tests simulate a crash. Only the test build can arm them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,7 +69,7 @@ pub struct QuarantineStore {
     audit: File,
     head: ChainHead,
     euid: u32,
-    on_behalf_of: Option<u32>,
+    on_behalf_of: Option<String>,
     recovered: Vec<RecoveryAction>,
     /// Where audit anchors go (`None`: disabled).
     anchor: Option<PathBuf>,
@@ -298,6 +286,7 @@ impl QuarantineStore {
                 gid: st.st_gid,
                 dev: st.st_dev,
                 ino: st.st_ino,
+                owner_sid: None,
                 modified: OffsetDateTime::from_unix_timestamp(st.st_mtime).ok(),
             },
             key_hex: hex(&key),
@@ -707,8 +696,8 @@ impl QuarantineStore {
     /// Records `uid` as the user later actions are performed for (a
     /// service acting on a client's request). The actor stays this
     /// process's own uid.
-    pub fn on_behalf_of(&mut self, uid: Option<u32>) {
-        self.on_behalf_of = uid;
+    pub fn on_behalf_of(&mut self, principal: Option<String>) {
+        self.on_behalf_of = principal;
     }
 
     /// The audit log's current head: sequence number and SHA-256 (hex) of
@@ -991,7 +980,8 @@ impl QuarantineStore {
             seq: 0,
             time: OffsetDateTime::now_utc(),
             actor_uid: self.euid,
-            on_behalf_of: self.on_behalf_of,
+            actor_sid: None,
+            on_behalf_of: self.on_behalf_of.clone(),
             action: action.to_owned(),
             item: id.map(ToString::to_string),
             path: path.map(ObservedPath::from_path),
@@ -1081,35 +1071,6 @@ fn write_atomic(dir: &OwnedFd, name: &str, data: &[u8], display: &Path) -> Resul
     f.sync_all().map_err(|e| io_err("sync", display, e))?;
     rfs::renameat(dir, tmp.as_str(), dir, name).map_err(|e| io_err("rename", display, e))?;
     rfs::fsync(dir).map_err(|e| io_err("sync", display, e))
-}
-
-fn corrupt(id: &QuarantineId, reason: &str) -> RemediationError {
-    RemediationError::Corrupt {
-        id: id.clone(),
-        reason: reason.to_owned(),
-    }
-}
-
-fn xor_in_place(buf: &mut [u8], key: &[u8], offset: u64) {
-    let klen = key.len() as u64;
-    for (i, b) in buf.iter_mut().enumerate() {
-        let k = key[((offset + i as u64) % klen) as usize];
-        *b ^= k;
-    }
-}
-
-/// Split an absolute path into parent and final component, rejecting `..`
-/// and paths without a final normal component.
-fn split_checked(path: &Path) -> Result<(PathBuf, OsString)> {
-    let invalid = || RemediationError::InvalidPath(path.to_owned());
-    if !path.is_absolute() || path.components().any(|c| c == Component::ParentDir) {
-        return Err(invalid());
-    }
-    let Some(Component::Normal(name)) = path.components().next_back() else {
-        return Err(invalid());
-    };
-    let parent = path.parent().ok_or_else(invalid)?.to_path_buf();
-    Ok((parent, name.to_owned()))
 }
 
 /// Open a directory, refusing symbolic links (and magic links) in *every*

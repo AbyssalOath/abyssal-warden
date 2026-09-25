@@ -19,18 +19,22 @@
 //! * **No overwrite on restore.** Restores use `RENAME_NOREPLACE` into a
 //!   directory that is not group- or world-writable.
 //!
-//! Implemented for Linux only. On other platforms [`QuarantineStore::open`]
-//! returns [`RemediationError::Unsupported`].
+//! Implemented for Linux (`linux.rs`) and Windows (`windows.rs`, same
+//! guarantees with Windows mechanisms). On other platforms
+//! [`QuarantineStore::open`] returns [`RemediationError::Unsupported`].
 
 mod allowlist;
 mod anchors;
 mod audit;
+mod common;
 mod policy;
 mod record;
 mod report;
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(windows)]
+mod windows;
 
 pub use allowlist::{AllowEntry, MAX_ALLOW_ENTRIES, read_allowlist};
 pub use anchors::{Anchor, AnchorComparison, compare_anchors, parse_anchor};
@@ -48,20 +52,38 @@ use warden_core::Sha256Digest;
 
 #[cfg(target_os = "linux")]
 pub use linux::{AnchorTarget, QuarantineStore};
+#[cfg(windows)]
+pub use windows::{AnchorTarget, QuarantineStore};
 
-/// Default store location: `/var/lib/abyssal-warden/quarantine` when running
-/// as root, otherwise `$XDG_DATA_HOME/abyssal-warden/quarantine` (falling
-/// back to `~/.local/share`). `None` if it cannot be determined.
+/// Default store location. Linux: `/var/lib/abyssal-warden/quarantine` when
+/// running as root, otherwise `$XDG_DATA_HOME/abyssal-warden/quarantine`
+/// (falling back to `~/.local/share`). Windows: `%ProgramData%` (elevated)
+/// or `%LOCALAPPDATA%`, then `AbyssalWarden\Quarantine`. `None` if it
+/// cannot be determined.
 pub fn default_store_path() -> Option<PathBuf> {
-    #[cfg(target_os = "linux")]
-    if rustix::process::geteuid().is_root() {
-        return Some(PathBuf::from("/var/lib/abyssal-warden/quarantine"));
+    #[cfg(windows)]
+    {
+        // Administrators (and the service): machine-wide; others: per user.
+        let admin = warden_winsec::process_is_admin().unwrap_or(false);
+        let base = if admin {
+            std::env::var_os("ProgramData")
+        } else {
+            std::env::var_os("LOCALAPPDATA")
+        };
+        base.map(|b| PathBuf::from(b).join("AbyssalWarden").join("Quarantine"))
     }
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
-    Some(base.join("abyssal-warden").join("quarantine"))
+    #[cfg(not(windows))]
+    {
+        #[cfg(target_os = "linux")]
+        if rustix::process::geteuid().is_root() {
+            return Some(PathBuf::from("/var/lib/abyssal-warden/quarantine"));
+        }
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
+        Some(base.join("abyssal-warden").join("quarantine"))
+    }
 }
 
 /// A request to quarantine one file.
@@ -109,6 +131,10 @@ pub enum RemediationError {
     InsideStore(PathBuf),
     #[error("{0} is not a regular file")]
     NotRegularFile(PathBuf),
+    #[error(
+        "{0} is in use by another program (opened without sharing, or a running program); nothing was changed"
+    )]
+    InUse(PathBuf),
     #[error("{path} is larger than the {limit}-byte limit")]
     TooLarge { path: PathBuf, limit: u64 },
     #[error(
@@ -154,7 +180,7 @@ pub enum RemediationError {
     InjectedFault,
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 mod unsupported {
     use super::*;
     use std::path::Path;
@@ -226,5 +252,5 @@ mod unsupported {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub use unsupported::QuarantineStore;

@@ -1,38 +1,45 @@
-//! The Abyssal Warden service (`abyssal-wardend`), Linux.
+//! The Abyssal Warden service (`abyssal-wardend`), Linux and Windows.
 //!
-//! * Listens on a Unix socket; every connection is identified by the
-//!   kernel (`SO_PEERCRED`) and every request is validated and authorised
-//!   (`warden_ipc::policy`). There is no network listener.
+//! * Listens on a local endpoint (a Unix socket, or a named pipe on
+//!   Windows); every connection is identified by the operating system
+//!   (`SO_PEERCRED`, or the client's token) and every request is validated
+//!   and authorised (`warden_ipc::policy`). There is no network listener.
 //! * Runs scans and system checks as **jobs** in separate, killable child
-//!   processes with reduced privileges (see `runner`), queued and bounded.
+//!   processes (with reduced privileges on Linux, see `runner`), queued and
+//!   bounded.
 //! * Keeps job history and reports, runs **schedules**, applies the
 //!   allow-list and (when asked) automatic quarantine in the service
 //!   itself, and periodically compares the quarantine audit chain with the
-//!   system journal.
+//!   system log.
 //!
 //! Design: docs/security/privilege-model.md,
-//! docs/architecture/decisions/0018-service-and-ipc.md.
+//! docs/architecture/decisions/0018-service-and-ipc.md,
+//! docs/architecture/decisions/0019-windows-unsafe-boundary.md.
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 mod accounts;
-#[cfg(target_os = "linux")]
+#[cfg(any(unix, windows))]
 mod audit;
-#[cfg(target_os = "linux")]
+#[cfg(any(unix, windows))]
 pub mod client;
-#[cfg(target_os = "linux")]
 pub mod config;
-#[cfg(target_os = "linux")]
+#[cfg(any(unix, windows))]
 mod jobs;
-#[cfg(target_os = "linux")]
+#[cfg(any(unix, windows))]
 mod runner;
-#[cfg(target_os = "linux")]
+#[cfg(any(unix, windows))]
 mod schedule;
-#[cfg(target_os = "linux")]
+#[cfg(any(unix, windows))]
 mod server;
-#[cfg(target_os = "linux")]
+#[cfg(any(unix, windows))]
 mod store;
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
+/// Name of the Windows service.
+pub const WINDOWS_SERVICE_NAME: &str = "AbyssalWarden";
 
 /// Command-line overrides for the daemon.
 #[derive(Clone, Debug, Default)]
@@ -42,33 +49,119 @@ pub struct DaemonOptions {
     pub state_dir: Option<PathBuf>,
 }
 
-#[cfg(target_os = "linux")]
 pub(crate) fn sanitize(s: &str) -> String {
     warden_core::text::escape_unsafe_chars(s)
 }
 
-/// Log line to standard error (journald when run by systemd).
-#[cfg(target_os = "linux")]
+/// Log line to standard error (journald under systemd; on Windows the
+/// Service Control Manager discards it, so important events also go to the
+/// Event Log through the quarantine store's anchors).
 pub(crate) fn log(msg: &str) {
     eprintln!("abyssal-wardend: {}", sanitize(msg));
 }
 
-#[cfg(not(target_os = "linux"))]
-pub fn run(_opts: DaemonOptions) -> Result<(), String> {
-    Err("the service is only implemented for Linux so far".into())
+/// The service's own principal: its uid (Unix) or SID (Windows). Owner of
+/// scheduled jobs.
+#[cfg(unix)]
+pub(crate) fn service_principal() -> String {
+    rustix::process::geteuid().as_raw().to_string()
 }
 
-#[cfg(target_os = "linux")]
-pub fn run(opts: DaemonOptions) -> Result<(), String> {
-    use std::os::unix::fs::MetadataExt;
-    use std::path::Path;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
+#[cfg(windows)]
+pub(crate) fn service_principal() -> String {
+    warden_winsec::process_user_sid().unwrap_or_else(|_| warden_winsec::sddl::SYSTEM.into())
+}
 
-    let root = rustix::process::geteuid().is_root();
-    let config_path = opts
-        .config
-        .unwrap_or_else(|| PathBuf::from(config::DEFAULT_CONFIG));
+/// Whether the service runs with full privileges (root, or an elevated
+/// administrator / SYSTEM on Windows).
+#[cfg(unix)]
+fn privileged() -> bool {
+    rustix::process::geteuid().is_root()
+}
+
+#[cfg(windows)]
+fn privileged() -> bool {
+    warden_winsec::process_is_admin().unwrap_or(false)
+}
+
+/// Runs in the foreground until Ctrl-C or SIGTERM.
+#[cfg(any(unix, windows))]
+pub fn run(opts: DaemonOptions) -> Result<(), String> {
+    let stop = Arc::new(AtomicBool::new(false));
+    {
+        let stop = Arc::clone(&stop);
+        ctrlc::set_handler(move || stop.store(true, std::sync::atomic::Ordering::SeqCst))
+            .map_err(|e| format!("signal handler: {e}"))?;
+    }
+    run_with_stop(opts, &stop)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn run(_opts: DaemonOptions) -> Result<(), String> {
+    Err("the service is not implemented for this platform".into())
+}
+
+/// Runs under the Windows Service Control Manager (`abyssal-wardend
+/// --service`, as registered by `install`).
+#[cfg(windows)]
+pub fn run_windows_service() -> Result<(), String> {
+    warden_winsec::scm::run_as_service(WINDOWS_SERVICE_NAME, |stop| {
+        run_with_stop(DaemonOptions::default(), &stop)
+    })
+    .map_err(|e| format!("cannot start as a service: {e}"))
+}
+
+/// Registers the Windows service (automatic start, LocalSystem).
+#[cfg(windows)]
+pub fn install_windows_service() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    warden_winsec::scm::install(
+        WINDOWS_SERVICE_NAME,
+        "Abyssal Warden",
+        "Scheduled and on-request malware scanning; local named-pipe IPC only.",
+        &exe,
+        &["--service"],
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+pub fn uninstall_windows_service() -> Result<(), String> {
+    warden_winsec::scm::uninstall(WINDOWS_SERVICE_NAME).map_err(|e| e.to_string())
+}
+
+/// The scanner binary: configured, or `abyssal-warden` next to this one.
+/// When privileged, it must not be modifiable by unprivileged users.
+#[cfg(any(unix, windows))]
+fn scanner_binary(cfg: &config::ServiceConfig, privileged: bool) -> Result<PathBuf, String> {
+    let binary = match &cfg.scanner_binary {
+        Some(b) => b.clone(),
+        None => std::env::current_exe()
+            .map_err(|e| e.to_string())?
+            .parent()
+            .ok_or("cannot locate the service binary's directory")?
+            .join(if cfg!(windows) {
+                "abyssal-warden.exe"
+            } else {
+                "abyssal-warden"
+            }),
+    };
+    let file = std::fs::File::open(&binary)
+        .map_err(|e| format!("scanner binary {}: {e}", binary.display()))?;
+    if privileged {
+        config::check_trusted_file(&binary, &file)?;
+    }
+    Ok(binary)
+}
+
+/// Runs the service until `stop` is set.
+#[cfg(any(unix, windows))]
+pub fn run_with_stop(opts: DaemonOptions, stop: &Arc<AtomicBool>) -> Result<(), String> {
+    use std::sync::Mutex;
+    use std::sync::atomic::Ordering;
+
+    let root = privileged();
+    let config_path = opts.config.unwrap_or_else(config::default_config_path);
     let mut cfg = config::ServiceConfig::load(&config_path, root)?;
     if let Some(s) = opts.socket {
         cfg.socket = s;
@@ -78,24 +171,11 @@ pub fn run(opts: DaemonOptions) -> Result<(), String> {
     }
     cfg.validate()?;
     let cfg = Arc::new(cfg);
-    let accounts = accounts::Accounts::load();
+    let binary = scanner_binary(&cfg, root)?;
 
-    let binary = match &cfg.scanner_binary {
-        Some(b) => b.clone(),
-        None => std::env::current_exe()
-            .map_err(|e| e.to_string())?
-            .parent()
-            .ok_or("cannot locate the service binary's directory")?
-            .join("abyssal-warden"),
-    };
-    let meta = std::fs::metadata(&binary)
-        .map_err(|e| format!("scanner binary {}: {e}", binary.display()))?;
-    if root && (meta.uid() != 0 || meta.mode() & 0o022 != 0) {
-        return Err(format!(
-            "scanner binary {} must be owned by root and not writable by others",
-            binary.display()
-        ));
-    }
+    #[cfg(unix)]
+    let accounts = accounts::Accounts::load();
+    #[cfg(unix)]
     let (setpriv, scanner) = if root {
         let sp = ["/usr/bin/setpriv", "/bin/setpriv"]
             .iter()
@@ -116,6 +196,23 @@ pub fn run(opts: DaemonOptions) -> Result<(), String> {
         log("not running as root: jobs run with this account's own permissions (development mode)");
         (None, None)
     };
+    #[cfg(windows)]
+    let (setpriv, scanner) = {
+        if !root {
+            log(
+                "not running elevated: jobs run with this account's own permissions (development mode)",
+            );
+        }
+        (None, None)
+    };
+
+    // Claim the endpoint before touching any state, so a second instance
+    // fails here instead of marking the running instance's jobs as
+    // interrupted.
+    #[cfg(unix)]
+    let listener = server::bind(&cfg, &accounts)?;
+    #[cfg(windows)]
+    let listener = server::bind_pipe(&cfg.socket.to_string_lossy())?;
 
     let store = Arc::new(store::Store::open(&cfg.state_dir)?);
     let manager = jobs::Manager::new(
@@ -128,7 +225,6 @@ pub fn run(opts: DaemonOptions) -> Result<(), String> {
         },
     );
     let workers = manager.start_workers();
-    let listener = server::bind(&cfg, &accounts)?;
     let ctx = Arc::new(server::Ctx {
         cfg: Arc::clone(&cfg),
         manager: Arc::clone(&manager),
@@ -138,23 +234,17 @@ pub fn run(opts: DaemonOptions) -> Result<(), String> {
         audit: Mutex::new(store.last_audit()),
     });
 
-    let stop = Arc::new(AtomicBool::new(false));
-    {
-        let stop = Arc::clone(&stop);
-        ctrlc::set_handler(move || stop.store(true, Ordering::SeqCst))
-            .map_err(|e| format!("signal handler: {e}"))?;
-    }
     let scheduler = {
         let (cfg, manager, store, stop) = (
             Arc::clone(&cfg),
             Arc::clone(&manager),
             Arc::clone(&store),
-            Arc::clone(&stop),
+            Arc::clone(stop),
         );
         std::thread::spawn(move || schedule::run(cfg, manager, store, stop))
     };
     let auditor = {
-        let (ctx, stop) = (Arc::clone(&ctx), Arc::clone(&stop));
+        let (ctx, stop) = (Arc::clone(&ctx), Arc::clone(stop));
         std::thread::spawn(move || {
             let hours = u64::from(ctx.cfg.audit_check_hours);
             if hours == 0 {
@@ -180,7 +270,14 @@ pub fn run(opts: DaemonOptions) -> Result<(), String> {
         cfg.socket.display(),
         env!("CARGO_PKG_VERSION")
     ));
-    server::serve(&listener, &ctx, &stop);
+    #[cfg(unix)]
+    let served: Result<(), String> = {
+        server::serve(&listener, &ctx, stop);
+        Ok(())
+    };
+    #[cfg(windows)]
+    let served = server::serve_pipe(listener, &cfg.socket.to_string_lossy(), &ctx, stop);
+    stop.store(true, Ordering::SeqCst);
     log("stopping");
     manager.shutdown();
     for w in workers {
@@ -188,7 +285,7 @@ pub fn run(opts: DaemonOptions) -> Result<(), String> {
     }
     let _ = scheduler.join();
     let _ = auditor.join();
+    #[cfg(unix)]
     let _ = std::fs::remove_file(&cfg.socket);
-    let _ = Path::new(&cfg.socket);
-    Ok(())
+    served
 }

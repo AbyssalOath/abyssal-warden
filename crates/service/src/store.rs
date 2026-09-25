@@ -4,7 +4,6 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use time::OffsetDateTime;
@@ -18,7 +17,11 @@ pub(crate) struct Store {
     dir: PathBuf,
 }
 
+/// Creates `path` if needed and checks that only this account (and, on
+/// Windows, SYSTEM and Administrators) can access it.
+#[cfg(unix)]
 fn private_dir(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -37,13 +40,50 @@ fn private_dir(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Atomically replaces `path` with `data` (0600).
+#[cfg(windows)]
+fn private_dir(path: &Path) -> Result<(), String> {
+    use warden_winsec::sddl;
+    let err = |e: std::io::Error| format!("{}: {e}", path.display());
+    let sid = warden_winsec::process_user_sid().map_err(err)?;
+    if !path.exists() {
+        std::fs::create_dir_all(path).map_err(err)?;
+        warden_winsec::set_protected_dacl(path, &sddl::private_dacl(&sid)).map_err(err)?;
+    }
+    let meta = std::fs::symlink_metadata(path).map_err(err)?;
+    if !meta.is_dir() || meta.file_type().is_symlink() {
+        return Err(format!(
+            "{} must be a directory, not a link",
+            path.display()
+        ));
+    }
+    let text = warden_winsec::security_descriptor(path).map_err(err)?;
+    // Subdirectories inherit the protected DACL of the state directory.
+    let desc = sddl::parse(&text)
+        .ok_or_else(|| format!("{}: unreadable security descriptor", path.display()))?;
+    let others =
+        sddl::granted_to_others(&desc, u32::MAX, &[sddl::SYSTEM, sddl::ADMINISTRATORS, &sid]);
+    if !others.is_empty() {
+        return Err(format!(
+            "{} is accessible to others: {}",
+            path.display(),
+            others.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+/// Atomically replaces `path` with `data` (0600 on Unix; the directory's
+/// DACL on Windows).
 pub(crate) fn write_private(path: &Path, data: &[u8]) -> Result<(), String> {
     let dir = path.parent().ok_or("no parent directory")?;
     let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| e.to_string())?;
-    tmp.as_file()
-        .set_permissions(std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+    }
     tmp.write_all(data).map_err(|e| e.to_string())?;
     tmp.as_file().sync_all().map_err(|e| e.to_string())?;
     tmp.persist(path).map_err(|e| e.error.to_string())?;
@@ -175,9 +215,12 @@ impl Store {
         )
     }
 
-    /// A directory owned by `uid` (0700) for a job child's writable state
-    /// (content rollback records).
+    /// A directory the job's child may write (content rollback records):
+    /// on Unix owned by the child's `uid` (0700); on Windows, where
+    /// children run as the service account, inside the state directory.
+    #[cfg(unix)]
     pub(crate) fn child_dir(&self, uid: u32, gid: u32) -> Result<PathBuf, String> {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         let base = self.dir.join("children");
         std::fs::DirBuilder::new()
             .recursive(true)
@@ -204,6 +247,13 @@ impl Store {
             std::os::unix::fs::chown(&dir, Some(uid), Some(gid))
                 .map_err(|e| format!("{}: {e}", dir.display()))?;
         }
+        Ok(dir)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn child_dir(&self) -> Result<PathBuf, String> {
+        let dir = self.dir.join("children");
+        private_dir(&dir)?;
         Ok(dir)
     }
 }

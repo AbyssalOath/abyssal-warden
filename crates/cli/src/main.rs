@@ -57,7 +57,7 @@ enum Command {
     /// Work with YARA rules.
     #[command(subcommand)]
     Yara(YaraCommand),
-    /// Quarantine, restore and delete files (Linux only).
+    /// Quarantine, restore and delete files (Linux and Windows).
     Quarantine(quarantine::QuarantineArgs),
     /// Create and verify signed content bundles.
     #[command(subcommand)]
@@ -147,7 +147,8 @@ struct ScanArgs {
     #[arg(long)]
     quarantine: bool,
     /// With --quarantine, also stop processes running the quarantined files
-    /// (paused, then killed once the file is stored; Linux).
+    /// (Linux: paused, then killed once the file is stored; Windows:
+    /// terminated after the copy is committed).
     #[arg(long, requires = "quarantine")]
     kill_processes: bool,
     /// Quarantine store (for --quarantine, and whose allow-list is applied)

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/engine", "crates/yara", "crates/heuristics", "crates/remediation", "crates/system", "crates/ipc", "crates/service", "crates/cli"]
+members = ["crates/core", "crates/engine", "crates/yara", "crates/heuristics", "crates/remediation", "crates/system", "crates/ipc", "crates/service", "crates/winsec", "crates/cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,6 +21,7 @@ warden-yara = { path = "crates/yara" }
 warden-remediation = { path = "crates/remediation" }
 warden-ipc = { path = "crates/ipc" }
 warden-service = { path = "crates/service" }
+warden-winsec = { path = "crates/winsec" }
 warden-system = { path = "crates/system" }
 
 clap = { version = "4.5", features = ["derive"] }

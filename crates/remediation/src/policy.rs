@@ -28,14 +28,66 @@ const PROTECTED_PREFIXES: &[&str] = &[
     "/var/lib/dpkg",
     "/var/lib/rpm",
 ];
-#[cfg(not(unix))]
-const PROTECTED_PREFIXES: &[&str] = &[];
 
 /// True if `path` is under a protected system directory. `path` must be
 /// absolute and free of `..` and symlinks (the store enforces both), so
 /// this lexical check is meaningful.
+#[cfg(unix)]
 pub fn is_protected_path(path: &Path) -> bool {
     PROTECTED_PREFIXES.iter().any(|p| path.starts_with(p))
+}
+
+/// Windows: under `%SystemRoot%`, the Program Files directories,
+/// `%ProgramData%\Microsoft`, or the boot and recovery folders of the system
+/// drive. Compared case-insensitively, with or without the `\\?\` prefix.
+#[cfg(windows)]
+pub fn is_protected_path(path: &Path) -> bool {
+    let env = |k: &str| std::env::var(k).ok();
+    let drive = env("SystemDrive").unwrap_or_else(|| "C:".into());
+    let mut roots: Vec<String> = [
+        env("SystemRoot"),
+        env("ProgramFiles"),
+        env("ProgramFiles(x86)"),
+        env("ProgramW6432"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if let Some(pd) = env("ProgramData") {
+        roots.push(format!(r"{pd}\Microsoft"));
+    }
+    for d in [
+        "Boot",
+        "Recovery",
+        "System Volume Information",
+        "$Recycle.Bin",
+        "EFI",
+    ] {
+        roots.push(format!(r"{drive}\{d}"));
+    }
+    windows_path_under(&path.to_string_lossy(), &roots)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn is_protected_path(_path: &Path) -> bool {
+    false
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+/// Case-insensitive, component-wise "is `path` under one of `roots`" for
+/// Windows paths (`\\?\` prefixes and `/` separators tolerated).
+pub(crate) fn windows_path_under(path: &str, roots: &[String]) -> bool {
+    let norm = |s: &str| -> String {
+        let s = s.replace('/', "\\");
+        let s = s.strip_prefix(r"\\?\").unwrap_or(&s).to_ascii_lowercase();
+        s.trim_end_matches('\\').to_owned()
+    };
+    let p = norm(path);
+    roots
+        .iter()
+        .map(|r| norm(r))
+        .filter(|r| !r.is_empty())
+        .any(|r| p == r || p.starts_with(&format!("{r}\\")))
 }
 
 /// The file and expected hash to quarantine automatically for `finding`, or
@@ -89,7 +141,23 @@ pub(crate) fn native_path(p: &ObservedPath) -> Option<PathBuf> {
             let bytes = crate::record::unhex(h)?;
             Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
         }
-        #[cfg(not(unix))]
+        // Windows: UTF-16LE code units (the engine's encoding).
+        #[cfg(windows)]
+        Some(h) => {
+            use std::os::windows::ffi::OsStringExt;
+            let bytes = crate::record::unhex(h)?;
+            if bytes.len() % 2 != 0 {
+                return None;
+            }
+            let units: Vec<u16> = bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
+                .collect();
+            Some(PathBuf::from(std::ffi::OsString::from_wide(&units)))
+        }
+        #[cfg(not(any(unix, windows)))]
         Some(_) => None,
     }
 }
@@ -129,6 +197,18 @@ mod tests {
             remediation_detail: None,
             detected_at: OffsetDateTime::UNIX_EPOCH,
         }
+    }
+
+    #[test]
+    fn windows_protected_paths() {
+        let roots = vec![r"C:\Windows".to_owned(), r"C:\Program Files".to_owned()];
+        assert!(windows_path_under(r"C:\Windows\System32\x.dll", &roots));
+        assert!(windows_path_under(r"\\?\c:\windows\x", &roots));
+        assert!(windows_path_under("C:/Program Files/App/a.exe", &roots));
+        assert!(windows_path_under(r"C:\Windows", &roots));
+        assert!(!windows_path_under(r"C:\WindowsApps\x", &roots));
+        assert!(!windows_path_under(r"C:\Users\a\x.exe", &roots));
+        assert!(!windows_path_under(r"C:\Users\a\x.exe", &[String::new()]));
     }
 
     #[test]

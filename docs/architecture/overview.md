@@ -109,7 +109,7 @@ The main principles:
 | Invalid signature database | `SignatureDbError` | CLI refuses to scan |
 
 Production code uses no `unwrap`/`expect` (enforced by Clippy lints), and
-`unsafe` is forbidden workspace-wide.
+`unsafe` is forbidden workspace-wide except in `warden-winsec` ([ADR-0019](decisions/0019-windows-unsafe-boundary.md)).
 
 ## Extension points
 

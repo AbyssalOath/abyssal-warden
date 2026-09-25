@@ -26,6 +26,7 @@ Template: context → options considered → decision → consequences.
 | [0016](0016-package-trust-self-integrity-windows.md) | Package trust, scanner self-integrity, Windows persistence | Accepted |
 | [0017](0017-file-heuristics.md) | File heuristics | Accepted |
 | [0018](0018-service-and-ipc.md) | Service, local IPC and privilege separation (Linux) | Accepted |
+| [0019](0019-windows-unsafe-boundary.md) | Windows parity and the `unsafe` boundary | Accepted |
 
 Pending decisions, each to be recorded before its implementation starts:
 

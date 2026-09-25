@@ -15,8 +15,8 @@ use crate::{EXIT_ERROR, Format};
 
 #[derive(Args, Debug)]
 pub(crate) struct ServiceArgs {
-    /// Service socket [default: /run/abyssal-warden/wardend.sock, or
-    /// $ABYSSAL_WARDEN_SOCKET].
+    /// Service endpoint [default: /run/abyssal-warden/wardend.sock, or
+    /// \\.\pipe\AbyssalWarden on Windows, or $ABYSSAL_WARDEN_SOCKET].
     #[arg(long, value_name = "PATH", global = true)]
     socket: Option<PathBuf>,
     #[command(subcommand)]
@@ -115,12 +115,12 @@ pub(crate) fn run(args: ServiceArgs) -> ExitCode {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(unix, windows)))]
 fn call(_socket: &std::path::Path, _op: Op) -> Result<Reply, String> {
     Err("the service is only available on Linux so far".into())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(unix, windows))]
 fn call(socket: &std::path::Path, op: Op) -> Result<Reply, String> {
     match warden_service::client::call(socket, op)? {
         Reply::Error { code, message } => Err(format!("{} ({})", message, label(&code))),
@@ -132,7 +132,7 @@ fn socket(args: &ServiceArgs) -> PathBuf {
     args.socket
         .clone()
         .or_else(|| std::env::var_os("ABYSSAL_WARDEN_SOCKET").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from(warden_ipc::DEFAULT_SOCKET))
+        .unwrap_or_else(|| PathBuf::from(warden_ipc::default_endpoint()))
 }
 
 fn absolute(paths: &[PathBuf]) -> Result<Vec<String>, String> {
@@ -184,8 +184,8 @@ fn run_inner(args: ServiceArgs) -> Result<u8, String> {
             );
             println!("  schedules: {}", s.schedules);
             println!(
-                "  you:       uid {}{}",
-                s.caller_uid,
+                "  you:       {}{}",
+                who(&s.caller),
                 if s.caller_is_admin {
                     " (administrator)"
                 } else {
@@ -236,11 +236,11 @@ fn run_inner(args: ServiceArgs) -> Result<u8, String> {
             }
             for j in &jobs {
                 println!(
-                    "{}  {:<12} {:<10} uid {:<6} {}  {}",
+                    "{}  {:<12} {:<10} {:<10} {}  {}",
                     j.id,
                     label(&j.kind),
                     label(&j.state),
-                    j.owner_uid,
+                    who(&j.owner),
                     fmt_time(j.created_at),
                     sanitize(
                         &j.schedule
@@ -353,6 +353,15 @@ fn run_inner(args: ServiceArgs) -> Result<u8, String> {
     }
 }
 
+/// "uid 1000" on Unix; a Windows SID as it is.
+fn who(principal: &str) -> String {
+    if principal.starts_with("S-") {
+        sanitize(principal)
+    } else {
+        format!("uid {}", sanitize(principal))
+    }
+}
+
 fn done(reply: Reply) -> Result<u8, String> {
     match reply {
         Reply::Done { message } => {
@@ -380,8 +389,8 @@ fn job(sock: &std::path::Path, id: Uuid) -> Result<JobSummary, String> {
 fn print_job(j: &JobSummary) {
     println!("job {} ({}): {}", j.id, label(&j.kind), label(&j.state));
     println!(
-        "  owner uid {}{}",
-        j.owner_uid,
+        "  owner {}{}",
+        who(&j.owner),
         if j.as_owner {
             " (ran with the owner's permissions)"
         } else {

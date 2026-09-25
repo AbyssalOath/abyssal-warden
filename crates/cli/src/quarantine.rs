@@ -41,8 +41,9 @@ enum QuarantineCommand {
         allow_protected: bool,
         #[arg(long, value_name = "SIZE", default_value = "512M", value_parser = parse_size)]
         max_file_size: u64,
-        /// Stop processes running this file: they are paused before the move
-        /// and killed once the file is quarantined (Linux).
+        /// Stop processes running this file (Linux: paused before the move and
+        /// killed once it is stored; Windows: terminated after the copy is
+        /// committed, since a running program's file cannot be deleted).
         #[arg(long)]
         kill_processes: bool,
     },

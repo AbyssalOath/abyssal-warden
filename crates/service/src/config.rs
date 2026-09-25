@@ -8,7 +8,28 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use warden_ipc::JobKind;
 
-pub const DEFAULT_CONFIG: &str = "/etc/abyssal-warden/service.json";
+/// Default configuration file: `/etc/abyssal-warden/service.json`, or on
+/// Windows `%ProgramData%\AbyssalWarden\service.json`.
+pub fn default_config_path() -> PathBuf {
+    program_data().map_or_else(
+        || PathBuf::from("/etc/abyssal-warden/service.json"),
+        |d| d.join("service.json"),
+    )
+}
+
+/// `%ProgramData%\AbyssalWarden` on Windows; `None` elsewhere.
+fn program_data() -> Option<PathBuf> {
+    if cfg!(windows) {
+        Some(
+            PathBuf::from(
+                std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into()),
+            )
+            .join("AbyssalWarden"),
+        )
+    } else {
+        None
+    }
+}
 const MAX_CONFIG: u64 = 1 << 20;
 const MAX_SCHEDULES: usize = 64;
 
@@ -85,13 +106,19 @@ pub struct Schedule {
 }
 
 fn default_socket() -> PathBuf {
-    PathBuf::from(warden_ipc::DEFAULT_SOCKET)
+    PathBuf::from(warden_ipc::default_endpoint())
 }
 fn default_state() -> PathBuf {
-    PathBuf::from("/var/lib/abyssal-warden/service")
+    program_data().map_or_else(
+        || PathBuf::from("/var/lib/abyssal-warden/service"),
+        |d| d.join("Service"),
+    )
 }
 fn default_store() -> PathBuf {
-    PathBuf::from("/var/lib/abyssal-warden/quarantine")
+    program_data().map_or_else(
+        || PathBuf::from("/var/lib/abyssal-warden/quarantine"),
+        |d| d.join("Quarantine"),
+    )
 }
 fn default_scanner_user() -> String {
     "abyssal-warden".into()
@@ -153,7 +180,7 @@ impl ServiceConfig {
             }
         }
         // sockaddr_un.sun_path is 108 bytes including the terminating NUL.
-        if self.socket.as_os_str().len() >= 108 {
+        if cfg!(unix) && self.socket.as_os_str().len() >= 108 {
             return Err(format!(
                 "socket path {} is too long (Unix sockets allow at most 107 bytes)",
                 self.socket.display()
@@ -227,7 +254,6 @@ impl ServiceConfig {
     /// group or others.
     pub fn load(path: &Path, require_secure: bool) -> Result<Self, String> {
         use std::io::Read;
-        use std::os::unix::fs::MetadataExt;
         let file = match std::fs::File::open(path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -237,16 +263,8 @@ impl ServiceConfig {
             }
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
-        let meta = file
-            .metadata()
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        if require_secure && (meta.uid() != 0 || meta.mode() & 0o022 != 0) {
-            return Err(format!(
-                "{} must be owned by root and not writable by group or others (owner {}, mode {:04o})",
-                path.display(),
-                meta.uid(),
-                meta.mode() & 0o7777
-            ));
+        if require_secure {
+            check_trusted_file(path, &file)?;
         }
         let mut text = String::new();
         file.take(MAX_CONFIG + 1)
@@ -262,6 +280,42 @@ impl ServiceConfig {
     }
 }
 
+/// A file the privileged service trusts (its configuration, the scanner
+/// binary) must not be modifiable by unprivileged users.
+#[cfg(unix)]
+pub(crate) fn check_trusted_file(path: &Path, file: &std::fs::File) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = file
+        .metadata()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if meta.uid() != 0 || meta.mode() & 0o022 != 0 {
+        return Err(format!(
+            "{} must be owned by root and not writable by group or others (owner {}, mode {:04o})",
+            path.display(),
+            meta.uid(),
+            meta.mode() & 0o7777
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn check_trusted_file(path: &Path, _file: &std::fs::File) -> Result<(), String> {
+    use warden_winsec::sddl;
+    let text =
+        warden_winsec::security_descriptor(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    sddl::check_write_restricted(
+        &text,
+        &[sddl::SYSTEM, sddl::ADMINISTRATORS, sddl::TRUSTED_INSTALLER],
+    )
+    .map_err(|e| {
+        format!(
+            "{} must be writable only by SYSTEM and Administrators ({e})",
+            path.display()
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,7 +328,7 @@ mod tests {
     #[test]
     fn defaults_and_schedules() {
         let c = ServiceConfig::default();
-        assert_eq!(c.socket, PathBuf::from(warden_ipc::DEFAULT_SOCKET));
+        assert_eq!(c.socket, PathBuf::from(warden_ipc::default_endpoint()));
         assert_eq!(c.max_concurrent_jobs, 1);
         assert!(c.validate().is_ok());
         let ok = parse(r#"{"schedules":[{"name":"daily-home","paths":["/home"],"every_hours":24,"at_utc":"03:30","heuristics":true},

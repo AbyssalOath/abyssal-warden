@@ -309,14 +309,6 @@ fn malformed_and_hostile_requests_are_rejected() {
 #[test]
 fn single_instance_history_survives_restart_and_jobs_cancel() {
     let d = Daemon::start(true, r#","max_concurrent_jobs":1"#);
-    // A second instance on the same socket refuses to start.
-    let second = Command::new(env!("CARGO_BIN_EXE_abyssal-wardend"))
-        .arg("--config")
-        .arg(d.dir.path().join("cfg.json"))
-        .output()
-        .unwrap();
-    assert_eq!(second.status.code(), Some(2));
-    assert!(stderr(&second).contains("in use"), "{}", stderr(&second));
 
     // One worker: the second job waits in the queue and can be cancelled there.
     let scan = |p: &str| Op::Scan {
@@ -331,6 +323,27 @@ fn single_instance_history_survives_restart_and_jobs_cancel() {
     let Reply::JobStarted { job: second } = d.call(scan("/usr/share")) else {
         panic!("second")
     };
+    // A second instance with the same configuration refuses to start, and
+    // leaves the running instance's queued job alone (it must not mark it
+    // interrupted before finding the socket taken).
+    let other = Command::new(env!("CARGO_BIN_EXE_abyssal-wardend"))
+        .arg("--config")
+        .arg(d.dir.path().join("cfg.json"))
+        .output()
+        .unwrap();
+    assert_eq!(other.status.code(), Some(2));
+    assert!(stderr(&other).contains("in use"), "{}", stderr(&other));
+    let record: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            d.dir
+                .path()
+                .join("state/jobs")
+                .join(format!("{second}.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["state"], "queued", "{record}");
     assert!(matches!(
         d.call(Op::Cancel { job: second }),
         Reply::Done { .. }

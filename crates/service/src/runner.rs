@@ -19,9 +19,14 @@
 //!
 //! Children get their own process group, a minimal environment, `/` as
 //! working directory, bounded output and a deadline.
+//!
+//! **Windows:** children run as the service account (no identity drop yet;
+//! see docs/known-limitations.md); a cancelled or timed-out job's whole
+//! process tree is ended with `taskkill /T /F`.
 
 use std::ffi::OsString;
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -30,6 +35,7 @@ use std::time::{Duration, Instant};
 
 /// Who a child runs as.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) enum Identity {
     /// The service's own identity (only when the service is not root).
     Inherit,
@@ -43,10 +49,13 @@ pub(crate) enum Identity {
     User { uid: u32, gid: u32 },
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) const SCAN_CAPS: &[&str] = &["dac_read_search"];
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) const SYSTEM_CHECK_CAPS: &[&str] = &["dac_read_search", "sys_ptrace"];
 
 /// `setpriv` arguments for `identity`, ending with `--`.
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn setpriv_args(identity: &Identity) -> Vec<OsString> {
     let caps = |list: &[&str]| {
         let mut s = String::from("-all");
@@ -109,15 +118,31 @@ pub(crate) fn command(
     };
     cmd.args(args)
         .env_clear()
-        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
-        .env("LC_ALL", "C")
         // Children never quarantine, so they never write audit anchors.
         .env("ABYSSAL_WARDEN_SYSLOG_SOCKET", "")
-        .current_dir("/")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    cmd.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("LC_ALL", "C")
+        .current_dir("/")
         .process_group(0);
+    #[cfg(windows)]
+    for var in [
+        "SystemRoot",
+        "SystemDrive",
+        "ProgramData",
+        "ProgramFiles",
+        "windir",
+        "TEMP",
+        "TMP",
+        "COMPUTERNAME",
+    ] {
+        if let Some(v) = std::env::var_os(var) {
+            cmd.env(var, v);
+        }
+    }
     Ok(cmd)
 }
 
@@ -144,7 +169,7 @@ pub(crate) fn run(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("cannot start scanner: {e}"))?;
-    let pgid = rustix::process::Pid::from_child(&child);
+    let child_id = child.id();
     let (Some(mut out), Some(mut err)) = (child.stdout.take(), child.stderr.take()) else {
         let _ = child.kill();
         return Err("scanner pipes unavailable".into());
@@ -179,8 +204,7 @@ pub(crate) fn run(
                 if expired || cancel.load(Ordering::SeqCst) {
                     outcome.timed_out = expired;
                     outcome.cancelled = !expired;
-                    let _ =
-                        rustix::process::kill_process_group(pgid, rustix::process::Signal::KILL);
+                    kill_tree(child_id);
                     let _ = child.kill();
                     break child.wait().map_err(|e| e.to_string())?;
                 }
@@ -200,7 +224,30 @@ pub(crate) fn run(
     Ok(outcome)
 }
 
+/// Kills the child's whole process tree (its process group on Unix).
+fn kill_tree(pid: u32) {
+    #[cfg(unix)]
+    if let Some(pgid) = rustix::process::Pid::from_raw(pid.cast_signed()) {
+        let _ = rustix::process::kill_process_group(pgid, rustix::process::Signal::KILL);
+    }
+    #[cfg(windows)]
+    {
+        let taskkill = std::env::var_os("SystemRoot")
+            .map_or_else(
+                || std::path::PathBuf::from(r"C:\Windows"),
+                std::path::PathBuf::from,
+            )
+            .join(r"System32\taskkill.exe");
+        let _ = Command::new(taskkill)
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
 

@@ -1,7 +1,12 @@
-//! Comparing the quarantine audit chain with the anchors in the system
-//! journal (docs/security/quarantine.md). Only anchors that journald
-//! attributes to the service's own uid (`_UID`, supplied by the kernel) are
-//! considered.
+//! Comparing the quarantine audit chain with the anchors in the system log
+//! (docs/security/quarantine.md).
+//!
+//! * **Linux:** journald; only anchors journald attributes to the
+//!   service's own uid (`_UID`, supplied by the kernel) are considered.
+//! * **Windows:** the Application event log (source `AbyssalWarden`). Any
+//!   user can write to that log, so extra anchors can be forged (causing a
+//!   false alarm), but existing ones can only be removed by an
+//!   administrator clearing the log.
 
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
@@ -13,8 +18,30 @@ use warden_remediation::{Anchor, QuarantineStore, compare_anchors, parse_anchor}
 
 use crate::runner::{self, Identity};
 
+#[cfg(unix)]
 const JOURNALCTL: &[&str] = &["/usr/bin/journalctl", "/bin/journalctl"];
 
+/// Anchors from `wevtutil qe ... /f:xml` output: every `audit seq=...`
+/// text up to the next markup.
+#[cfg_attr(unix, allow(dead_code))]
+pub(crate) fn parse_event_log(output: &str) -> Vec<Anchor> {
+    let mut out = Vec::new();
+    let mut rest = output;
+    while let Some(i) = rest.find("audit seq=") {
+        let tail = &rest[i..];
+        let end = tail.find(['<', '\r', '\n']).unwrap_or(tail.len());
+        if let Some(a) = parse_anchor(&tail[..end]) {
+            out.push(a);
+        }
+        rest = &tail[end.max(1)..];
+        if out.len() >= 10_000_000 {
+            break;
+        }
+    }
+    out
+}
+
+#[cfg_attr(windows, allow(dead_code))]
 /// Anchors from `journalctl -o json` output (one object per line; MESSAGE
 /// may be a string or, for non-UTF-8 data, an array of bytes).
 pub(crate) fn parse_journal(output: &[u8]) -> Vec<Anchor> {
@@ -39,6 +66,79 @@ pub(crate) fn parse_journal(output: &[u8]) -> Vec<Anchor> {
         }
     }
     out
+}
+
+#[cfg(unix)]
+fn read_anchors() -> Result<Vec<Anchor>, String> {
+    let tool = JOURNALCTL
+        .iter()
+        .map(Path::new)
+        .find(|p| p.exists())
+        .ok_or("journalctl not available")?;
+    let uid = rustix::process::geteuid().as_raw();
+    let args: Vec<std::ffi::OsString> = [
+        "-t",
+        "abyssal-warden",
+        &format!("_UID={uid}"),
+        "-o",
+        "json",
+        "--no-pager",
+        "--output-fields=MESSAGE",
+    ]
+    .iter()
+    .map(|s| (*s).into())
+    .collect();
+    let o = runner::command(None, tool, &Identity::Inherit, &args).and_then(|cmd| {
+        runner::run(
+            cmd,
+            Duration::from_secs(120),
+            &AtomicBool::new(false),
+            128 << 20,
+        )
+    })?;
+    if o.exit_code == Some(0) || o.exit_code == Some(1) {
+        Ok(parse_journal(&o.stdout))
+    } else {
+        Err(format!(
+            "journal not readable: {}",
+            crate::sanitize(o.stderr_tail.trim())
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn read_anchors() -> Result<Vec<Anchor>, String> {
+    let tool = std::env::var_os("SystemRoot")
+        .map_or_else(
+            || std::path::PathBuf::from(r"C:\Windows"),
+            std::path::PathBuf::from,
+        )
+        .join(r"System32\wevtutil.exe");
+    let args: Vec<std::ffi::OsString> = [
+        "qe",
+        "Application",
+        "/q:*[System[Provider[@Name='AbyssalWarden']]]",
+        "/f:xml",
+    ]
+    .iter()
+    .map(|s| (*s).into())
+    .collect();
+    let o = runner::command(None, &tool, &Identity::Inherit, &args).and_then(|cmd| {
+        runner::run(
+            cmd,
+            Duration::from_secs(120),
+            &AtomicBool::new(false),
+            256 << 20,
+        )
+    })?;
+    if o.exit_code == Some(0) {
+        Ok(parse_event_log(&String::from_utf8_lossy(&o.stdout)))
+    } else {
+        Err(format!(
+            "event log not readable: {}",
+            crate::sanitize(o.stderr_tail.trim())
+        ))
+    }
 }
 
 pub(crate) fn check(store_path: &Path) -> AuditStatus {
@@ -70,45 +170,11 @@ pub(crate) fn check(store_path: &Path) -> AuditStatus {
     };
     status.chain_ok = true;
     status.entries = chain.len() as u64;
-    let Some(tool) = JOURNALCTL.iter().map(Path::new).find(|p| p.exists()) else {
-        status.consistent = true;
-        status.detail = "chain valid; journalctl not available, anchors not compared".into();
-        return status;
-    };
-    let uid = rustix::process::geteuid().as_raw();
-    let args: Vec<std::ffi::OsString> = [
-        "-t",
-        "abyssal-warden",
-        &format!("_UID={uid}"),
-        "-o",
-        "json",
-        "--no-pager",
-        "--output-fields=MESSAGE",
-    ]
-    .iter()
-    .map(|s| (*s).into())
-    .collect();
-    let outcome = runner::command(None, tool, &Identity::Inherit, &args).and_then(|cmd| {
-        runner::run(
-            cmd,
-            Duration::from_secs(120),
-            &AtomicBool::new(false),
-            128 << 20,
-        )
-    });
-    let anchors = match outcome {
-        Ok(o) if o.exit_code == Some(0) || o.exit_code == Some(1) => parse_journal(&o.stdout),
-        Ok(o) => {
+    let anchors = match read_anchors() {
+        Ok(a) => a,
+        Err(why) => {
             status.consistent = true;
-            status.detail = format!(
-                "chain valid; journal not readable ({})",
-                crate::sanitize(o.stderr_tail.trim())
-            );
-            return status;
-        }
-        Err(e) => {
-            status.consistent = true;
-            status.detail = format!("chain valid; journal not readable ({e})");
+            status.detail = format!("chain valid; anchors not compared ({why})");
             return status;
         }
     };
@@ -134,6 +200,19 @@ pub(crate) fn check(store_path: &Path) -> AuditStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_event_log_xml() {
+        let h = "a".repeat(64);
+        let c = "b".repeat(16);
+        let xml = format!(
+            "<Event><EventData><Data>audit seq=7 hash={h} chain={c} action=quarantine outcome=ok</Data></EventData></Event>\r\n<Event><EventData><Data>other</Data></EventData></Event>"
+        );
+        let a = parse_event_log(&xml);
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].seq, 7);
+        assert!(parse_event_log("audit seq=").is_empty());
+    }
 
     #[test]
     fn parses_journal_json() {

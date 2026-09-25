@@ -960,3 +960,28 @@ mod archives {
         assert_eq!(report.findings.len(), 2);
     }
 }
+
+/// A file opened by another program without read sharing is reported as
+/// locked, not as a generic error, and the rest of the scan continues.
+#[cfg(windows)]
+#[test]
+fn locked_files_are_reported_as_locked() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("free.txt"), b"free");
+    let locked = dir.path().join("locked.txt");
+    write(&locked, b"locked");
+    let _held = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&locked)
+        .unwrap();
+    let report = scan_db(config(dir.path()));
+    assert_eq!(report.stats.files_scanned, 1);
+    let issue = report
+        .issues
+        .iter()
+        .find(|i| i.kind == warden_core::IssueKind::Locked)
+        .expect("locked issue");
+    assert!(issue.message.contains("in use"), "{}", issue.message);
+}

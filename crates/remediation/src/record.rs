@@ -100,12 +100,17 @@ pub struct OriginalFile {
     pub path: ObservedPath,
     pub size: u64,
     pub sha256: Sha256Digest,
-    /// `st_mode & 0o7777`.
+    /// Unix: `st_mode & 0o7777`. Windows: file attributes.
     pub mode: u32,
     pub uid: u32,
     pub gid: u32,
+    /// Unix: device. Windows: volume serial number.
     pub dev: u64,
+    /// Unix: inode. Windows: file index.
     pub ino: u64,
+    /// Windows: the file owner's SID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_sid: Option<String>,
     #[serde(
         default,
         with = "time::serde::rfc3339::option",

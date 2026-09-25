@@ -28,9 +28,13 @@ pub struct AuditEntry {
     #[serde(with = "time::serde::rfc3339")]
     pub time: OffsetDateTime,
     pub actor_uid: u32,
-    /// The user a service performed the action for (IPC caller).
+    /// Windows: the acting account's SID (`actor_uid` is then 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_behalf_of: Option<u32>,
+    pub actor_sid: Option<String>,
+    /// The client a service performed the action for: a uid (Unix) or SID
+    /// (Windows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<String>,
     /// `quarantine`, `restore`, `delete`, `recover`.
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -186,6 +190,7 @@ mod tests {
             seq: 0,
             time: OffsetDateTime::UNIX_EPOCH,
             actor_uid: 1000,
+            actor_sid: None,
             on_behalf_of: None,
             action: action.into(),
             item: None,

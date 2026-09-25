@@ -36,6 +36,17 @@ pub const MAX_PATH_BYTES: usize = 4096;
 
 /// Default socket path on Linux.
 pub const DEFAULT_SOCKET: &str = "/run/abyssal-warden/wardend.sock";
+/// Default pipe name on Windows.
+pub const DEFAULT_PIPE: &str = r"\\.\pipe\AbyssalWarden";
+
+/// The default endpoint for this platform.
+pub fn default_endpoint() -> &'static str {
+    if cfg!(windows) {
+        DEFAULT_PIPE
+    } else {
+        DEFAULT_SOCKET
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -284,8 +295,9 @@ pub struct JobSummary {
     pub id: Uuid,
     pub kind: JobKind,
     pub state: JobState,
-    /// Who asked (uid); 0 for scheduled jobs.
-    pub owner_uid: u32,
+    /// Who asked: a uid (Unix) or SID (Windows); the service's own
+    /// identity for scheduled jobs.
+    pub owner: String,
     /// Schedule name, for scheduled jobs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
@@ -328,7 +340,8 @@ pub struct ServiceStatus {
     pub jobs_running: u32,
     pub jobs_queued: u32,
     pub schedules: u32,
-    pub caller_uid: u32,
+    /// The caller's uid (Unix) or SID (Windows).
+    pub caller: String,
     pub caller_is_admin: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_audit: Option<AuditStatus>,

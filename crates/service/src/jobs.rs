@@ -24,10 +24,22 @@ const MAX_LISTED: usize = 500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RunAs {
-    /// The scanner account with read-everything capability.
+    /// The scanner account with read-everything capability (Unix), or the
+    /// service account (Windows).
     Service,
-    /// The requesting user (uid, primary gid).
+    /// The requesting user (uid, primary gid). Unix only.
+    #[cfg(unix)]
     Caller { uid: u32, gid: u32 },
+}
+
+impl RunAs {
+    fn is_caller(self) -> bool {
+        #[cfg(unix)]
+        if let Self::Caller { .. } = self {
+            return true;
+        }
+        false
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,6 +60,7 @@ pub(crate) struct Environment {
     /// Present when the service runs as root.
     pub(crate) setpriv: Option<PathBuf>,
     /// Scanner account (uid, gid), when the service runs as root.
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) scanner: Option<(u32, u32)>,
 }
 
@@ -113,7 +126,7 @@ impl Manager {
 
     pub(crate) fn submit(
         &self,
-        owner_uid: u32,
+        owner: String,
         schedule: Option<String>,
         spec: JobSpec,
     ) -> Result<Uuid, Rejection> {
@@ -135,12 +148,12 @@ impl Manager {
             id,
             kind: spec.kind,
             state: JobState::Queued,
-            owner_uid,
+            owner,
             schedule,
             paths: spec.paths.clone(),
             heuristics: spec.heuristics,
             quarantine: spec.quarantine,
-            as_owner: matches!(spec.run_as, RunAs::Caller { .. }),
+            as_owner: spec.run_as.is_caller(),
             created_at: OffsetDateTime::now_utc(),
             started_at: None,
             finished_at: None,
@@ -260,6 +273,13 @@ impl Manager {
         }
     }
 
+    #[cfg(windows)]
+    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+    fn identity(&self, _spec: &JobSpec) -> Result<Identity, String> {
+        Ok(Identity::Inherit)
+    }
+
+    #[cfg(unix)]
     fn identity(&self, spec: &JobSpec) -> Result<Identity, String> {
         let caps = match spec.kind {
             JobKind::Scan => runner::SCAN_CAPS,
@@ -283,14 +303,20 @@ impl Manager {
             Ok(i) => i,
             Err(e) => return JobResult::failed(e),
         };
-        let (uid, gid) = match identity {
-            Identity::Account { uid, gid, .. } | Identity::User { uid, gid } => (uid, gid),
-            Identity::Inherit => (
-                rustix::process::geteuid().as_raw(),
-                rustix::process::getegid().as_raw(),
-            ),
+        #[cfg(unix)]
+        let (who, child_dir) = {
+            let (uid, gid) = match identity {
+                Identity::Account { uid, gid, .. } | Identity::User { uid, gid } => (uid, gid),
+                Identity::Inherit => (
+                    rustix::process::geteuid().as_raw(),
+                    rustix::process::getegid().as_raw(),
+                ),
+            };
+            (format!("uid {uid}"), self.store.child_dir(uid, gid))
         };
-        let child_dir = match self.store.child_dir(uid, gid) {
+        #[cfg(windows)]
+        let (who, child_dir) = ("the service account".to_owned(), self.store.child_dir());
+        let child_dir = match child_dir {
             Ok(d) => d,
             Err(e) => {
                 return JobResult::failed(format!("cannot prepare the job's state directory: {e}"));
@@ -312,7 +338,7 @@ impl Manager {
             Ok(c) => c,
             Err(e) => return JobResult::failed(e),
         };
-        log(&format!("job {id}: starting {:?} as uid {uid}", spec.kind));
+        log(&format!("job {id}: starting {:?} as {who}", spec.kind));
         let outcome = match runner::run(
             cmd,
             Duration::from_secs(timeout_secs + 60),

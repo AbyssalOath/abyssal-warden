@@ -111,6 +111,9 @@ pub enum IssueKind {
     /// An archive or archive member is malformed (bad structure, CRC
     /// mismatch) or its parser failed.
     ArchiveError,
+    /// Windows: the file is open in another program that does not allow
+    /// reading (sharing or lock violation), so it could not be scanned.
+    Locked,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
