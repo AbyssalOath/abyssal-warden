@@ -1,0 +1,102 @@
+# Abyssal Warden .gitignore
+#
+# Security-sensitive project: keep secrets, live malware, quarantine data and
+# scan output out of the repository. If a file is ignored by mistake, review
+# it before forcing it in with `git add -f`.
+#
+# Must stay tracked (do not ignore): Cargo.lock, .cargo/audit.toml,
+# examples/keys/*.pub, *.minisig, examples/**.
+
+# --- Build output -----------------------------------------------------------
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+
+# --- Fuzzing ----------------------------------------------------------------
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/
+
+# --- Coverage / profiling ---------------------------------------------------
+*.profraw
+*.profdata
+lcov.info
+tarpaulin-report.*
+/coverage/
+perf.data*
+flamegraph.svg
+
+# --- Secrets and credentials ------------------------------------------------
+# Signing keys: public keys (*.pub) and signatures (*.minisig) are fine to
+# commit; secret keys never are.
+*.key
+*.sec
+*.secret
+minisign.key
+.minisign/
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+id_ecdsa*
+!*.pub
+.env
+.env.*
+*.token
+.cargo/credentials
+.cargo/credentials.toml
+.netrc
+secrets/
+
+# --- Live malware and real-world samples ------------------------------------
+# Tests use synthetic fixtures only (docs/development/contributing.md).
+/samples/
+**/malware/
+**/malware-samples/
+*.malware
+*.infected
+*.virus
+*.vir
+*.quarantine
+# Password-protected sample archives conventionally use these names.
+*infected*.zip
+*infected*.7z
+# Native executables and drivers have no place in this source repository.
+*.exe
+*.dll
+*.sys
+*.scr
+*.msi
+*.com
+*.ocx
+*.cpl
+
+# --- Scanner runtime data ---------------------------------------------------
+# Quarantine stores, audit logs and scan reports can contain live malware
+# (encoded), paths and hashes from a real machine.
+**/quarantine/
+**/quarantine-store/
+audit.log
+/reports/
+*.report.json
+report.json
+
+# --- Editors and OS ---------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.#*
+\#*\#
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Local tool settings ----------------------------------------------------
+.claude/settings.local.json

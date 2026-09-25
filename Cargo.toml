@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/engine", "crates/yara", "crates/remediation", "crates/cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+repository = "https://github.com/LordSodomiser/abyssal-warden"
+# See docs/architecture/decisions/0004-project-license.md.
+license = "AGPL-3.0-only"
+publish = false
+
+[workspace.dependencies]
+warden-core = { path = "crates/core" }
+warden-engine = { path = "crates/engine" }
+warden-yara = { path = "crates/yara" }
+warden-remediation = { path = "crates/remediation" }
+
+clap = { version = "4.5", features = ["derive"] }
+ctrlc = "3.4"
+libc = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+tempfile = "3.20"
+thiserror = "2.0"
+time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
+walkdir = "2.5"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+expect_used = "warn"
+todo = "warn"
+unimplemented = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+# Panics must unwind: the scanner isolates detector panics with
+# `catch_unwind`. Do not switch this to "abort".
+panic = "unwind"

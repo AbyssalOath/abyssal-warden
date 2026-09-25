@@ -1,0 +1,40 @@
+[package]
+name = "warden-yara"
+description = "Abyssal Warden YARA-X detection provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+warden-core.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+# Default features are off: they include modules for VirusTotal Livehunt,
+# Cuckoo sandbox reports and protobuf test fixtures, which have no place in
+# an endpoint scanner. Modules are enabled explicitly; the supported list is
+# in docs/detection/yara.md.
+yara-x = { version = "1.20", default-features = false, features = [
+  "constant-folding",
+  "exact-atoms",
+  "fast-regexp",
+  "dex-module",
+  "dotnet-module",
+  "elf-module",
+  "hash-module",
+  "lnk-module",
+  "macho-module",
+  "math-module",
+  "pe-module",
+  "string-module",
+  "time-module",
+] }
+
+[dev-dependencies]
+warden-engine.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

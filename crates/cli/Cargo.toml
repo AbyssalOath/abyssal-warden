@@ -1,0 +1,28 @@
+[package]
+name = "warden-cli"
+description = "Abyssal Warden command-line interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "abyssal-warden"
+path = "src/main.rs"
+
+[dependencies]
+warden-core.workspace = true
+warden-engine.workspace = true
+warden-yara.workspace = true
+warden-remediation.workspace = true
+clap.workspace = true
+ctrlc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+time.workspace = true
+
+
+[lints]
+workspace = true

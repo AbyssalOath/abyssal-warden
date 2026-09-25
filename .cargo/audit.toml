@@ -1,0 +1,10 @@
+# Accepted advisories. Justifications are in deny.toml and
+# docs/development/release-process.md#accepted-advisories; keep all three in
+# sync, and re-evaluate whenever yara-x is updated.
+[advisories]
+ignore = [
+  "RUSTSEC-2026-0222", # wasmtime: cross-engine type indices; yara-x uses one Engine
+  "RUSTSEC-2026-0269", # wasmtime: WASI sandbox escape; WASI not in the tree
+  "RUSTSEC-2023-0071", # rsa Marvin attack; public-key verification only
+  "RUSTSEC-2025-0141", # bincode unmaintained; compiled-rule serialisation unused
+]

@@ -1,0 +1,29 @@
+[package]
+name = "warden-engine"
+description = "Abyssal Warden scan engine: traversal, hashing, orchestration and built-in detectors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+warden-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+uuid.workspace = true
+walkdir.workspace = true
+minisign-verify = "0.2"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+minisign = "0.9"
+tempfile.workspace = true
+
+[lints]
+workspace = true

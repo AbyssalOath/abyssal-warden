@@ -1,0 +1,64 @@
+# cargo-deny policy. Run locally with `cargo deny check`.
+# Rationale: docs/development/release-process.md#dependency-policy
+
+[graph]
+all-features = true
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
+  "x86_64-pc-windows-gnu",
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+# Every ignored advisory needs a comment explaining why it does not apply.
+# Keep in sync with .cargo/audit.toml and docs/development/release-process.md.
+# Re-evaluate all of these whenever yara-x is updated.
+ignore = [
+  # wasmtime 45.x (pinned by yara-x 1.20, no fixed 45.x release): stores can
+  # mix up type indices *between engines*. yara-x uses a single global Engine.
+  { id = "RUSTSEC-2026-0222", reason = "single wasmtime Engine in yara-x; no fixed version reachable" },
+  # wasmtime 45.x: WASI filesystem sandbox escape. No WASI crates are in the
+  # dependency tree (wasmtime features: cranelift, runtime, std only).
+  { id = "RUSTSEC-2026-0269", reason = "WASI not used; no fixed version reachable" },
+  # rsa: Marvin timing attack on private-key operations. yara-x only verifies
+  # Authenticode signatures with public keys (Pkcs1v15Sign verify).
+  { id = "RUSTSEC-2023-0071", reason = "public-key verification only; no private-key operations" },
+  # bincode unmaintained: used by yara-x only for compiled-rule serialisation,
+  # which Abyssal Warden does not expose (compiled rules are refused).
+  { id = "RUSTSEC-2025-0141", reason = "compiled-rule (de)serialisation not used" },
+]
+
+[licenses]
+version = 2
+# Permissive licences compatible with every project licence under
+# consideration (docs/architecture/decisions/0004-project-license.md).
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "MIT",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+# Workspace crates are `publish = false` and have no licence field until the
+# project licence decision is made.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

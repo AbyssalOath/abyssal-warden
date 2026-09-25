@@ -1,0 +1,22 @@
+{
+  "format": "abyssal-warden.hash-signatures",
+  "format_version": 1,
+  "database": {
+    "name": "abyssal-warden-synthetic-test",
+    "version": "2026.09.24.1",
+    "description": "Synthetic, harmless test indicators for exercising the scan pipeline. Contains no real malware hashes.",
+    "license": "CC0-1.0"
+  },
+  "signatures": [
+    {
+      "id": "AW-TEST-0001",
+      "name": "AbyssalWarden.Test.SyntheticIndicator",
+      "sha256": "26d11a0d2767bb969011c61c58953c5d89035f8c2ca524efcafe3a9c92461eae",
+      "category": "test_indicator",
+      "severity": "info",
+      "rule_version": 1,
+      "description": "Matches a file containing exactly \"ABYSSAL-WARDEN-SYNTHETIC-TEST-INDICATOR\" followed by one newline (40 bytes). Create it with:\nprintf 'ABYSSAL-WARDEN-SYNTHETIC-TEST-INDICATOR\\n' > indicator.txt",
+      "remediation": "No action needed: this is a harmless test file."
+    }
+  ]
+}
