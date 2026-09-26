@@ -194,6 +194,48 @@ pub fn parse(sddl: &str) -> Option<Descriptor> {
     Some(d)
 }
 
+/// Rewrites every two-letter SID alias in the owner, group and ACE fields
+/// with `resolve` (unresolved aliases are kept). Windows prints some SIDs
+/// as machine-specific aliases (`LA`, the local Administrator account;
+/// `LG`, `DA`, ...) that cannot be mapped without asking the system.
+pub fn map_sids(sddl: &str, resolve: &dyn Fn(&str) -> Option<String>) -> String {
+    let alias_or = |s: &str| -> String {
+        if s.len() == 2 && s.bytes().all(|b| b.is_ascii_uppercase()) {
+            resolve(s).unwrap_or_else(|| s.to_owned())
+        } else {
+            s.to_owned()
+        }
+    };
+    let mut out = String::with_capacity(sddl.len());
+    let mut rest = sddl;
+    while !rest.is_empty() {
+        if rest.starts_with("O:") || rest.starts_with("G:") {
+            out.push_str(&rest[..2]);
+            let (sid, r) = take_sid(&rest[2..]);
+            out.push_str(&alias_or(sid));
+            rest = r;
+        } else if let Some(body) = rest.strip_prefix('(') {
+            let Some(end) = body.find(')') else {
+                out.push_str(rest);
+                break;
+            };
+            let mut fields: Vec<String> = body[..end].split(';').map(str::to_owned).collect();
+            if fields.len() >= 6 {
+                fields[5] = alias_or(&fields[5]);
+            }
+            out.push('(');
+            out.push_str(&fields.join(";"));
+            out.push(')');
+            rest = &body[end + 1..];
+        } else {
+            let Some(c) = rest.chars().next() else { break };
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    out
+}
+
 /// SIDs, other than `trusted`, that some allow-ACE effective on the object
 /// grants any of `rights`. With no DACL, everyone ("S-1-1-0") has access.
 pub fn granted_to_others(d: &Descriptor, rights: u32, trusted: &[&str]) -> Vec<String> {
@@ -285,6 +327,33 @@ mod tests {
         assert!(parse("garbage").is_none());
         assert!(parse("D:(A;;ZZ;;;SY)").is_none(), "unknown rights");
         assert!(parse("D:(Q;;FA;;;SY)").is_none(), "unknown ACE type");
+    }
+
+    #[test]
+    fn machine_specific_aliases_are_resolved() {
+        let me = "S-1-5-21-1-2-3-500";
+        let resolve = |a: &str| match a {
+            "LA" => Some(me.to_owned()),
+            "SY" => Some(SYSTEM.to_owned()),
+            _ => None,
+        };
+        let text = map_sids(
+            "O:LAG:SYD:PAI(A;OICI;FA;;;LA)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+            &resolve,
+        );
+        assert_eq!(
+            text,
+            format!(
+                "O:{me}G:{SYSTEM}D:PAI(A;OICI;FA;;;{me})(A;OICI;FA;;;{SYSTEM})(A;OICI;FA;;;BA)"
+            )
+        );
+        assert!(check_private(&text, &[SYSTEM, ADMINISTRATORS, me]).is_ok());
+        // Unknown aliases stay, and are treated as other principals.
+        assert!(check_private("D:P(A;;FA;;;LG)", &[SYSTEM]).is_err());
+        assert_eq!(
+            map_sids("D:P(A;;FA;;;S-1-5-18)", &resolve),
+            "D:P(A;;FA;;;S-1-5-18)"
+        );
     }
 
     #[test]

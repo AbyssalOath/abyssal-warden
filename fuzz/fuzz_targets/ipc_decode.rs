@@ -9,7 +9,7 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(req) = warden_ipc::decode::<warden_ipc::Request>(data) {
         let _ = req.validate();
         for admin in [false, true] {
-            let _ = authorize(Caller { uid: 1000, admin }, &req.op);
+            let _ = authorize(&Caller { principal: "1000".into(), admin }, &req.op);
         }
     }
     let _ = warden_ipc::decode::<warden_ipc::Response>(data);

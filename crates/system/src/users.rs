@@ -26,7 +26,8 @@ pub(crate) fn parse_passwd(text: &str) -> Vec<User> {
             continue;
         };
         let home = Path::new(f[5]);
-        if !home.is_absolute() || home == Path::new("/") {
+        // A Unix path whatever the host (offline images are read from any OS).
+        if !f[5].starts_with('/') || f[5] == "/" {
             continue;
         }
         let shell = f[6].rsplit('/').next().unwrap_or("");

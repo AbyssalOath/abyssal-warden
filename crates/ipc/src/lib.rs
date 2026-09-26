@@ -531,14 +531,15 @@ mod tests {
                 },
             )
         };
-        assert!(scan(vec!["/home"]).validate().is_ok());
+        let abs = if cfg!(windows) { r"C:\Users" } else { "/home" };
+        assert!(scan(vec![abs]).validate().is_ok());
         assert_eq!(
             scan(vec![]).validate().unwrap_err().code,
             ErrorCode::BadRequest
         );
         assert!(scan(vec!["relative"]).validate().is_err());
         assert!(scan(vec!["/a\0b"]).validate().is_err());
-        assert!(scan(vec!["/x"; MAX_PATHS + 1]).validate().is_err());
+        assert!(scan(vec![abs; MAX_PATHS + 1]).validate().is_err());
         let mut old = Request::new(1, Op::Ping {});
         old.version = 99;
         assert_eq!(old.validate().unwrap_err().code, ErrorCode::VersionMismatch);

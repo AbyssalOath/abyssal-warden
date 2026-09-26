@@ -142,7 +142,18 @@ pub fn security_descriptor(path: &Path) -> io::Result<String> {
         return Err(io::Error::from_raw_os_error(err as i32));
     }
     let _sd = LocalMem(psd);
-    descriptor_to_string(psd)
+    let text = descriptor_to_string(psd)?;
+    Ok(sddl::map_sids(&text, &resolve_alias))
+}
+
+/// The SID string behind an SDDL alias (`LA`, `SY`, ...), from the system.
+fn resolve_alias(alias: &str) -> Option<String> {
+    let text = wide(OsStr::new(alias)).ok()?;
+    let mut sid: PSID = null_mut();
+    // SAFETY: `text` is NUL-terminated; `sid` is LocalAlloc'd, freed below.
+    check(unsafe { ConvertStringSidToSidW(text.as_ptr(), &mut sid) }).ok()?;
+    let _mem = LocalMem(sid);
+    sid_to_string(sid).ok()
 }
 
 fn descriptor_to_string(psd: PSECURITY_DESCRIPTOR) -> io::Result<String> {

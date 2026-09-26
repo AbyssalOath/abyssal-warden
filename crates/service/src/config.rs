@@ -320,7 +320,17 @@ pub(crate) fn check_trusted_file(path: &Path, _file: &std::fs::File) -> Result<(
 mod tests {
     use super::*;
 
+    /// Absolute paths in test JSON (`"/x"`) as this platform writes them.
+    fn plat(s: &str) -> String {
+        if cfg!(windows) {
+            s.replace("\"/", "\"C:/")
+        } else {
+            s.to_owned()
+        }
+    }
+
     fn parse(s: &str) -> Result<ServiceConfig, String> {
+        let s = &plat(s);
         let c: ServiceConfig = serde_json::from_str(s).map_err(|e| e.to_string())?;
         c.validate().map(|()| c)
     }
@@ -342,7 +352,6 @@ mod tests {
             r#"{"unknown":1}"#,
             r#"{"max_concurrent_jobs":0}"#,
             r#"{"socket":"relative.sock"}"#,
-            r#"{"socket":"/tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sock"}"#,
             r#"{"schedules":[{"name":"a","paths":["/x"],"every_hours":0}]}"#,
             r#"{"schedules":[{"name":"a","paths":["x"],"every_hours":1}]}"#,
             r#"{"schedules":[{"name":"a","paths":[],"every_hours":1}]}"#,
@@ -355,8 +364,13 @@ mod tests {
             assert!(parse(bad).is_err(), "{bad}");
         }
         assert_eq!(parse_hhmm("03:05"), Some((3, 5)));
-        // The packaged example is valid.
-        parse(include_str!("../../../packaging/linux/service.json")).expect("packaged example");
+        #[cfg(unix)]
+        {
+            // Unix socket paths are limited to 107 bytes.
+            assert!(parse(&format!(r#"{{"socket":"/tmp/{}.sock"}}"#, "a".repeat(110))).is_err());
+            // The packaged (Linux) example is valid.
+            parse(include_str!("../../../packaging/linux/service.json")).expect("packaged example");
+        }
         assert_eq!(parse_hhmm("3:05"), None);
     }
 }
