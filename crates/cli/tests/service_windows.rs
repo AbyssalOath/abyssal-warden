@@ -9,23 +9,46 @@ use std::time::{Duration, Instant};
 use warden_ipc::{Op, Reply};
 
 /// Only SYSTEM and Administrators may modify `path` (what the daemon
-/// requires of its configuration and scanner when elevated).
+/// requires of its configuration and scanner when elevated): owner
+/// Administrators, and a protected DACL granting only SYSTEM and
+/// Administrators. Checked with the daemon's own rule.
 fn lock_down(path: &Path) {
-    let ok = Command::new("icacls")
-        .arg(path)
-        .args([
+    use warden_winsec::sddl;
+    for args in [
+        &["/setowner", "*S-1-5-32-544"][..],
+        &[
             "/inheritance:r",
             "/grant:r",
             "*S-1-5-18:(F)",
             "*S-1-5-32-544:(F)",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        ok.status.success(),
-        "{}",
-        String::from_utf8_lossy(&ok.stdout)
-    );
+        ],
+    ] {
+        let out = Command::new("icacls")
+            .arg(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "icacls {args:?}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    // Remove any explicit entry icacls left for other principals.
+    let text = warden_winsec::security_descriptor(path).unwrap();
+    let d = sddl::parse(&text).unwrap();
+    for sid in sddl::granted_to_others(&d, u32::MAX, &[sddl::SYSTEM, sddl::ADMINISTRATORS]) {
+        let _ = Command::new("icacls")
+            .arg(path)
+            .args(["/remove:g", &format!("*{sid}")])
+            .output();
+    }
+    let text = warden_winsec::security_descriptor(path).unwrap();
+    sddl::check_write_restricted(
+        &text,
+        &[sddl::SYSTEM, sddl::ADMINISTRATORS, sddl::TRUSTED_INSTALLER],
+    )
+    .unwrap_or_else(|e| panic!("{}: {e}; descriptor {text}", path.display()));
 }
 
 struct Daemon {

@@ -286,10 +286,27 @@ pub fn check_private(sddl: &str, trusted: &[&str]) -> Result<(), String> {
 }
 
 /// Checks that only `trusted` principals can modify an object (a
-/// configuration file, a program the service runs, a restore target).
+/// configuration file, a program the service runs). The owner can always
+/// rewrite the DACL (implicit `WRITE_DAC`) unless an `OWNER RIGHTS` entry
+/// limits it, so an untrusted owner counts as able to modify it.
 pub fn check_write_restricted(sddl: &str, trusted: &[&str]) -> Result<(), String> {
     let d = parse(sddl).ok_or("unreadable security descriptor")?;
-    let others = granted_to_others(&d, WRITE_RIGHTS, trusted);
+    let mut others = granted_to_others(&d, WRITE_RIGHTS, trusted);
+    let owner_rights_limited = d
+        .dacl
+        .as_ref()
+        .is_some_and(|acl| acl.iter().any(|a| a.sid == OWNER_RIGHTS && !a.inherit_only));
+    let trusted_norm: Vec<String> = trusted.iter().map(|t| normalize_sid(t)).collect();
+    match &d.owner {
+        Some(owner)
+            if !owner_rights_limited
+                && !trusted_norm.contains(owner)
+                && !others.contains(owner) =>
+        {
+            others.push(format!("{owner} (owner)"));
+        }
+        _ => {}
+    }
     if others.is_empty() {
         Ok(())
     } else {
@@ -392,6 +409,20 @@ mod tests {
         // OWNER RIGHTS resolves to the owner.
         assert!(check_write_restricted("O:SYD:(A;;FA;;;OW)", &trusted).is_ok());
         assert!(check_write_restricted("O:S-1-5-21-5-5-5-1000D:(A;;FA;;;OW)", &trusted).is_err());
+        // An untrusted owner can rewrite the DACL even without an ACE...
+        let e =
+            check_write_restricted("O:S-1-5-21-5-5-5-1000D:P(A;;FA;;;SY)(A;;FA;;;BA)", &trusted)
+                .unwrap_err();
+        assert!(e.contains("(owner)"), "{e}");
+        // ...unless OWNER RIGHTS limits it to read access.
+        assert!(
+            check_write_restricted(
+                "O:S-1-5-21-5-5-5-1000D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;OW)",
+                &trusted
+            )
+            .is_ok()
+        );
+        assert!(check_write_restricted("O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)", &trusted).is_ok());
         assert!(
             check_write_restricted("D:(A;;FA;;;WD)", &trusted)
                 .unwrap_err()

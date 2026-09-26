@@ -2423,6 +2423,7 @@ dependencies = [
  "warden-remediation",
  "warden-service",
  "warden-system",
+ "warden-winsec",
  "warden-yara",
  "zip",
 ]

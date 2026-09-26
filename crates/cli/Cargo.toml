@@ -42,5 +42,8 @@ rustix = { version = "1.1", features = ["process"] }
 minisign = "0.9"
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
+[target.'cfg(windows)'.dev-dependencies]
+warden-winsec.workspace = true
+
 [lints]
 workspace = true
