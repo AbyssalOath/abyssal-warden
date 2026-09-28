@@ -1,0 +1,84 @@
+# Unsigned test builds for Linux and Windows, downloadable from the run's
+# "Artifacts" section (GitHub login required; kept 14 days). These are NOT
+# releases: no tag, no signature, no SBOM. The release process is in
+# docs/development/release-process.md.
+#
+# Third-party actions are pinned to full commit SHAs (see ci.yml).
+name: Test builds
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-builds-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04: glibc 2.35, so the binary also runs on older distributions.
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            exe: ""
+          # Static C runtime: no Visual C++ redistributable needed.
+          - name: windows-x86_64
+            os: windows-latest
+            exe: ".exe"
+            rustflags: "-C target-feature=+crt-static"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: "1.98.0"
+
+      - name: Build
+        run: cargo build --release --locked -p warden-cli
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="abyssal-warden-${GITHUB_SHA::7}-${{ matrix.name }}"
+          mkdir -p "dist/$out"
+          cp "target/release/abyssal-warden${{ matrix.exe }}" "target/release/abyssal-wardend${{ matrix.exe }}" "dist/$out/"
+          cp keys/keyring.json "dist/$out/"
+          cp packaging/test-build-README.txt "dist/$out/README.txt"
+          mkdir -p "dist/$out/demo/keys"
+          cp -r examples/bundle "dist/$out/demo/"
+          cp examples/keys/keyring.json "dist/$out/demo/keys/"
+          cp LICENSE* "dist/$out/" 2>/dev/null || true
+          cd "dist/$out"
+          if command -v sha256sum >/dev/null; then
+            sha256sum abyssal-warden* keyring.json > SHA256SUMS
+          else
+            shasum -a 256 abyssal-warden* keyring.json > SHA256SUMS
+          fi
+          cat SHA256SUMS
+          ./abyssal-warden${{ matrix.exe }} --version
+          echo "ARTIFACT=$out" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: dist/${{ env.ARTIFACT }}
+          retention-days: 14
+          if-no-files-found: error

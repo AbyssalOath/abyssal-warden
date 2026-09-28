@@ -28,6 +28,15 @@ Enforced by `deny.toml` in CI:
 * `Cargo.lock` is committed. CI uses `--locked`. Lockfile changes are
   reviewed like code.
 
+## Test builds
+
+`.github/workflows/test-builds.yml` builds Linux (Ubuntu 22.04, glibc 2.35
+or newer) and Windows (static C runtime) programs on every push to `main`
+and on demand. They appear under the workflow run's *Artifacts* (GitHub
+login required, kept 14 days) with the project keyring, a demo bundle,
+`README.txt` (`packaging/test-build-README.txt`) and `SHA256SUMS`. They are
+**unsigned and not releases**: no tag, provenance or SBOM.
+
 ## Release checklist (planned)
 
 1. All CI gates green on the release commit; a fuzzing campaign (≥ 1 hour

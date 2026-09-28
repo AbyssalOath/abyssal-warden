@@ -29,6 +29,8 @@
   manifest. ESET campaigns whose reports mark a listed file as clean are
   left out. Importers gained `--clean-corpus`, `import-hashes
   --name-by-directory` and `import-yara --prefix`.
+- Test builds workflow: unsigned Linux and Windows downloads with the
+  keyring, a demo bundle and checksums, from every push to `main`.
 - Project keyring `keys/keyring.json`: three content keys (threshold 1)
   and two timestamp keys (online, offline backup).
 - Content channel kit (`packaging/content-channel/`): GitHub Actions
