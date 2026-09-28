@@ -251,8 +251,19 @@ fn tampered_database_is_refused_even_with_allow_unsigned() {
 fn signature_from_untrusted_key_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let db = copy_signed(&example_db(), dir.path());
-    // No --trusted-key: RequireTrusted with an empty key set.
+    // Only the built-in project keys are trusted, not the test key.
     let out = run(bin().arg("scan").arg("-s").arg(&db).arg(dir.path()));
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not trusted") || stderr.contains("does not verify"),
+        "{stderr}"
+    );
+    // Without the built-in keyring: RequireTrusted with an empty key set.
+    let out = run(bin()
+        .args(["scan", "--no-builtin-keyring", "-s"])
+        .arg(&db)
+        .arg(dir.path()));
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("no trusted keys"));
 }

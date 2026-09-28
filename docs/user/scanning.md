@@ -24,6 +24,7 @@ unless you pass `--allow-unsigned`. See
 | `--keyring FILE` | system keyring if present | Keyring of trusted keys with validity and revocation; repeatable |
 | `--allow-expired` | off | Accept expired bundles (recorded in the report) |
 | `--content-state FILE` | per user | Rollback-protection state |
+| `--no-builtin-keyring` | off | Do not trust the project keyring built into the program |
 | `--trusted-key FILE` | none | minisign public key whose signatures are accepted; repeatable |
 | `--allow-unsigned` | off | Accept content files that have no `.minisig` (a bad signature is still an error) |
 | `--max-content-size SIZE` | `64M` | Largest file YARA inspects; larger files are hashed only and listed as `content not inspected` |
@@ -38,6 +39,7 @@ unless you pass `--allow-unsigned`. See
 | `--quarantine-store DIR` | per-user default | Store for `--quarantine`, and whose allow-list is applied |
 | `--no-allowlist` | off | Treat allow-listed (restored) files like any other finding |
 | `--format human\|json` | `human` | Output format |
+| `--progress-json` | off | Progress as JSON lines on stderr (counts only, at most every 250 ms), for front ends such as the app |
 | `-o, --output FILE` | stdout | Write the report to a file (atomically; mode 0600 on Unix) |
 | `--follow-symlinks` | off | Follow links below the scan paths. May leave the scan paths |
 | `--max-file-size SIZE` | `512M` | Skip larger files (`K`/`M`/`G`/`T` = binary multiples) |

@@ -51,7 +51,7 @@ jobs:
           toolchain: "1.98.0"
 
       - name: Build
-        run: cargo build --release --locked -p warden-cli
+        run: cargo build --release --locked -p warden-cli -p warden-gui
 
       - name: Package
         shell: bash
@@ -59,7 +59,12 @@ jobs:
           set -euo pipefail
           out="abyssal-warden-${GITHUB_SHA::7}-${{ matrix.name }}"
           mkdir -p "dist/$out"
-          cp "target/release/abyssal-warden${{ matrix.exe }}" "target/release/abyssal-wardend${{ matrix.exe }}" "dist/$out/"
+          cp "target/release/abyssal-warden${{ matrix.exe }}" "target/release/abyssal-wardend${{ matrix.exe }}" \
+            "target/release/abyssal-warden-gui${{ matrix.exe }}" "dist/$out/"
+          cp assets/icons/abyssal-warden-256.png "dist/$out/abyssal-warden.png"
+          if [ -z "${{ matrix.exe }}" ]; then
+            cp packaging/linux/abyssal-warden.desktop "dist/$out/"
+          fi
           cp keys/keyring.json "dist/$out/"
           cp packaging/test-build-README.txt "dist/$out/README.txt"
           mkdir -p "dist/$out/demo/keys"

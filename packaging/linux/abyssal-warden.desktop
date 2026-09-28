@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Abyssal Warden
+GenericName=Malware Scanner
+Comment=Scan files for malware and check the system for persistence
+Exec=abyssal-warden-gui
+Icon=abyssal-warden
+Terminal=false
+Categories=System;Security;
+Keywords=malware;scan;antivirus;rootkit;security;
+StartupWMClass=abyssal-warden

@@ -247,25 +247,26 @@ const OWN_LIBRARIES: &[&str] = &[
     "libutil",
 ];
 
-/// Shared objects in `maps` (the text of `/proc/self/maps`) that are not
-/// ours: neither `own_exe` nor one of [`OWN_LIBRARIES`].
+/// Files mapped **executable** in `maps` (the text of `/proc/self/maps`)
+/// that are not ours: neither `own_exe` nor one of [`OWN_LIBRARIES`].
+/// Injected code has to be mapped executable to run, whatever its name;
+/// data files the loader maps (`/etc/ld.so.cache`, locale archives) never
+/// are, so they are not mistaken for libraries.
 pub(crate) fn injected_libraries(maps: &str, own_exe: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in maps.lines() {
         // address perms offset dev inode path
-        let Some(path) = line.splitn(6, ' ').nth(5).map(str::trim) else {
+        let mut fields = line.splitn(6, ' ');
+        let executable = fields.nth(1).is_some_and(|perms| perms.contains('x'));
+        let Some(path) = fields.nth(3).map(str::trim) else {
             continue;
         };
         let path = path.strip_suffix(" (deleted)").unwrap_or(path);
-        if !path.starts_with('/') || path == own_exe {
+        if !executable || !path.starts_with('/') || path == own_exe {
             continue;
         }
         let base = path.rsplit('/').next().unwrap_or(path);
-        let shared_object = base.contains(".so") || path.starts_with("/memfd:");
-        if shared_object
-            && !OWN_LIBRARIES.iter().any(|p| base.starts_with(p))
-            && !out.iter().any(|o| o == path)
-        {
+        if !OWN_LIBRARIES.iter().any(|p| base.starts_with(p)) && !out.iter().any(|o| o == path) {
             out.push(path.to_owned());
         }
     }
@@ -331,11 +332,16 @@ mod tests {
                     7f06-7f07 r--p 00001000 fd:01 126   /usr/lib/libhide.so\n\
                     7f08-7f09 r-xp 00000000 00:01 9     /memfd:x (deleted)\n\
                     7f0a-7f0b r--p 00000000 fd:01 127   /usr/lib/locale/locale-archive\n\
+                    7f0e-7f0f r--p 00000000 fd:01 129   /etc/ld.so.cache\n\
+                    7f10-7f11 r--p 00000000 fd:01 130   /usr/lib64/libdata.so.1\n\
+                    7f12-7f13 r-xp 00000000 fd:01 131   /tmp/.cache/payload.bin\n\
                     7ffc-7ffd r-xp 00000000 00:00 0     [vdso]\n\
                     7f0c-7f0d r-xp 00000000 fd:01 128   /usr/lib64/ld-linux-x86-64.so.2\n";
+        // Executable mappings only: the loader's cache and read-only data are
+        // not code; a renamed library is, whatever its name.
         assert_eq!(
             injected_libraries(maps, "/usr/bin/abyssal-warden"),
-            ["/usr/lib/libhide.so", "/memfd:x"]
+            ["/usr/lib/libhide.so", "/memfd:x", "/tmp/.cache/payload.bin"]
         );
     }
 

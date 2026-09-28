@@ -2,6 +2,24 @@
 
 ## Unreleased (0.1.0)
 
+### Added (desktop app)
+- `abyssal-warden-gui` (`crates/gui`, egui; ADR-0021): Status, Scan (live
+  progress, cancel), Results (findings by severity, full details, copy),
+  Detection content (update), Quarantine (through the service). Works
+  standalone by running the scanner as the user, or through the service.
+  Untrusted text is escaped; a headless test renders every page with a
+  hostile file name and checks that nothing unsafe is drawn.
+- The project keyring is built into the programs and the official update
+  channel is the default source (`--no-builtin-keyring` to opt out).
+- `scan --progress-json` for front ends.
+- App icon, Linux desktop entry, and the app in test builds.
+
+### Fixed
+- AW-SYS-019 reported `/etc/ld.so.cache` as code injected into the scanner
+  (a critical false positive found in testing). It now looks only at
+  executable mappings, which also catches injected libraries with
+  non-library names.
+
 ### Added (known limitations, phase 9: content updates and sources)
 - `abyssal-warden update` and the `warden-update` crate (ADR-0020): fetch
   the latest signed bundle from an `https://` URL or a local mirror, check

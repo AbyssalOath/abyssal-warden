@@ -25,7 +25,8 @@ that list.
 | 6 | Heuristics | **done** (PE rules await a Windows measurement) |
 | 7 | Service, authenticated IPC, privilege separation, scheduling | **done** (Linux; Windows transport in 8) |
 | 8 | Windows parity: quarantine store, locked files, file IDs, service transport | **done** (not yet run on a real Windows machine) |
-| 9 | Own detection content, auto-updated: key roles, signed timestamps, `update` command and service schedule, feed importers, licence review | **in progress**: code and channel kit done; hosting (GitHub Releases) and key custody (Actions secret plus offline backup) decided; feeds chosen (ESET malware-ioc, ReversingLabs; signature-base later) and the build pipeline done and trial-run; next: keyring, content repository setup, first signed release ([ADR-0020](docs/architecture/decisions/0020-content-updates.md)) |
+| 9 | Own detection content, auto-updated: key roles, signed timestamps, `update` command and service schedule, feed importers, licence review | **in progress**: code and channel kit done; hosting (GitHub Releases) and key custody (Actions secret plus offline backup) decided; feeds chosen (ESET malware-ioc, ReversingLabs; signature-base later) and the build pipeline done and trial-run; keyring and content repository set up; next: the first signed content release ([ADR-0020](docs/architecture/decisions/0020-content-updates.md)) |
+| 9b | Desktop app (egui), standalone or through the service; built-in project keyring | **first version done** ([ADR-0021](docs/architecture/decisions/0021-desktop-app.md)); software releases wait for it to mature |
 | 10 | Persistence removal (disable and back up units, cron entries, Run keys; undo and audit) | planned |
 | 11 | Rescue media and boot integrity (offline scan and clean from trusted media; TPM event log) | planned |
 | 12 | Real-time protection on Linux (fanotify) | research |
@@ -116,10 +117,11 @@ directory watcher.
 `scan` on a mounted image, and `system-check --root` (links resolved inside
 the image) work today. Planned: a documented trusted-boot-media workflow.
 
-## 10. GUI: planned
+## 10. GUI: first version done
 
-egui is the provisional choice ([evaluation](docs/architecture/gui.md)).
-Unprivileged, and talks only to the service over authenticated IPC.
+* done: egui desktop app, standalone or through the service ([ADR-0021](docs/architecture/decisions/0021-desktop-app.md), [user guide](docs/user/gui.md))
+* planned: notifications and tray icon, scan history, standalone quarantine management, live progress for service scans, schedule editing
+* planned: screen reader testing (NVDA, Narrator, Orca) before the first release
 
 ## 11. Testing and release hardening: ongoing
 

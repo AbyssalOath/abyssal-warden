@@ -28,7 +28,7 @@ Template: context → options considered → decision → consequences.
 | [0018](0018-service-and-ipc.md) | Service, local IPC and privilege separation (Linux) | Accepted |
 | [0019](0019-windows-unsafe-boundary.md) | Windows parity and the `unsafe` boundary | Accepted |
 | [0020](0020-content-updates.md) | Automatic content updates | Accepted |
+| [0021](0021-desktop-app.md) | Desktop app (egui, standalone or through the service) | Accepted |
 
 Pending decisions, each to be recorded before its implementation starts:
 
-* GUI framework ([evaluation](../gui.md))

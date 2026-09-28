@@ -8,7 +8,7 @@ design for a future component. Design documents say so in their first line.
 | Architecture | [Overview](architecture/overview.md) | current |
 | | [Crate boundaries](architecture/crate-boundaries.md) | current |
 | | [Detection pipeline](architecture/detection-pipeline.md) | current |
-| | [GUI framework evaluation](architecture/gui.md) | proposal |
+| | [GUI framework evaluation](architecture/gui.md) | decided (ADR-0021) |
 | | [Architecture decision records](architecture/decisions/README.md) | - |
 | Security | [Threat model](security/threat-model.md) | current |
 | | [Privilege model](security/privilege-model.md) | current (Linux) |
@@ -29,6 +29,7 @@ design for a future component. Design documents say so in their first line.
 | | [Release process](development/release-process.md) | current + planned |
 | | [Contributing](development/contributing.md) | current |
 | User | [Installation](user/installation.md) | current |
+| | [Desktop app](user/gui.md) | current (first version) |
 | | [Scanning](user/scanning.md) | current |
 | | [Remediation](user/remediation.md) | current (Linux) |
 | | [System check](user/system-check.md) | current (Linux; Windows live) |

@@ -15,10 +15,15 @@ use crate::{EXIT_ERROR, Format};
 /// Environment variable naming the default update source.
 pub(crate) const SOURCE_ENV: &str = "ABYSSAL_WARDEN_UPDATE_SOURCE";
 
+/// The project's official update channel (GitHub Releases of the content
+/// repository; ADR-0020).
+pub(crate) const OFFICIAL_SOURCE: &str =
+    "https://github.com/AbyssalOath/abyssal-warden-content/releases/latest/download/";
+
 #[derive(Args, Debug)]
 pub(crate) struct UpdateArgs {
     /// Update source: an https:// URL or a local directory (mirror)
-    /// [default: $ABYSSAL_WARDEN_UPDATE_SOURCE].
+    /// [default: $ABYSSAL_WARDEN_UPDATE_SOURCE, else the official channel].
     #[arg(long, value_name = "URL|DIR")]
     source: Option<String>,
     /// Where bundles are installed, one subdirectory each [default:
@@ -53,7 +58,7 @@ fn run_inner(args: &UpdateArgs) -> Result<(), String> {
         .source
         .clone()
         .or_else(|| std::env::var(SOURCE_ENV).ok().filter(|s| !s.is_empty()))
-        .ok_or_else(|| format!("no update source: give --source or set {SOURCE_ENV}"))?;
+        .unwrap_or_else(|| OFFICIAL_SOURCE.to_owned());
     let source = Source::parse(&source).map_err(|e| e.to_string())?;
     let content_dir = args
         .content_dir

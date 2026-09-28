@@ -35,6 +35,7 @@ flowchart LR
 | `warden-cli` | Arguments, content loading, progress, rendering, exit codes, quarantine commands | implemented |
 | `warden-service`, `warden-ipc` | Scheduling, IPC, privileged operations | implemented (Linux; [ADR-0018](decisions/0018-service-and-ipc.md)) |
 | `warden-system` | Persistence inventory, rootkit and integrity checks | implemented (Linux only) |
+| `warden-gui` | Desktop app: runs the scanner as a child or uses the service | implemented ([ADR-0021](decisions/0021-desktop-app.md)) |
 | `warden-update` | Content updates: timestamp freshness, staged download, verification, atomic install | implemented ([ADR-0020](decisions/0020-content-updates.md)) |
 | GUI | Desktop front end | [evaluated](gui.md), not implemented |
 

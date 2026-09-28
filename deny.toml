@@ -47,6 +47,14 @@ allow = [
   "Zlib",
 ]
 confidence-threshold = 0.9
+# Per-crate exceptions, each with its reason. BSL-1.0 (Boost) is permissive,
+# OSI-approved and GPL/AGPL-compatible; it is allowed only where needed.
+exceptions = [
+  # Windows clipboard for the GUI (egui-winit -> arboard), used to copy
+  # hashes and paths from findings.
+  { allow = ["BSL-1.0"], crate = "clipboard-win" },
+  { allow = ["BSL-1.0"], crate = "error-code" },
+]
 
 [licenses.private]
 # Workspace crates are `publish = false` and have no licence field until the

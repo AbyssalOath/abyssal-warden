@@ -121,6 +121,17 @@ crate's command-pattern table. The CLI composes them.
 * **Why separate:** it is the only crate with network access, and keeps
   the HTTP and TLS dependency tree out of the engine and the service.
 
+### `warden-gui` (binary `abyssal-warden-gui`)
+
+* **Contains:** the desktop app: pages, and the tasks that run the
+  `abyssal-warden` program (standalone) or talk to the service
+  ([ADR-0021](decisions/0021-desktop-app.md)).
+* **Dependencies:** warden-core, warden-ipc, warden-service (client only),
+  eframe (glow), rfd, serde, serde_json, time, uuid.
+* **Why separate:** keeps the GUI toolkit out of everything else, and the
+  app has no scanning code of its own: hostile files are parsed only in the
+  scanner process.
+
 ## Planned crates and the reason for each
 
 | Crate | Boundary reason |
@@ -128,7 +139,6 @@ crate's command-pattern table. The CLI composes them.
 | `warden-service` | Process boundary: the long-running, possibly privileged process. |
 | `warden-ipc` | Shared, versioned request/response schema for the service, CLI and GUI. |
 | `warden-platform-windows` / `-linux` | Isolates OS-specific dependencies (`windows` crate, etc.) and unsafe FFI, if needed, away from the `unsafe`-forbidden core. |
-| `warden-gui` | Keeps GUI dependencies out of everything else. |
 
 ## Rules
 

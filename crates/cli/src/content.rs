@@ -31,6 +31,11 @@ pub(crate) struct TrustArgs {
     /// %ProgramData%\AbyssalWarden\keyring.json) is always loaded if present.
     #[arg(long = "keyring", value_name = "FILE")]
     keyrings: Vec<PathBuf>,
+    /// Do not trust the project keyring built into this program (keys/
+    /// keyring.json at build time). Only the system keyring and the keys
+    /// given here are trusted then.
+    #[arg(long)]
+    no_builtin_keyring: bool,
     /// Load signature databases and rules that have no signature file. A
     /// signature that is present must still verify.
     #[arg(long)]
@@ -54,6 +59,10 @@ impl Trust {
 
     pub(crate) fn from_args(args: &TrustArgs) -> Result<Self, String> {
         let mut keys = TrustedKeys::new();
+        if !args.no_builtin_keyring {
+            keys.add_keyring(BUILTIN_KEYRING.as_bytes(), "built-in project keyring")
+                .map_err(|e| e.to_string())?;
+        }
         for path in &args.trusted_keys {
             keys.add_key_file(path).map_err(|e| e.to_string())?;
         }
@@ -84,6 +93,11 @@ impl Trust {
         Ok(loaded)
     }
 }
+
+/// The project's keyring, pinned into the program at build time: the trust
+/// root that official content is checked against. Keys change only with a
+/// new program release, never through content (content-trust.md).
+const BUILTIN_KEYRING: &str = include_str!("../../../keys/keyring.json");
 
 /// The system keyring, loaded automatically when it exists.
 fn system_keyring_path() -> Option<PathBuf> {
@@ -376,6 +390,27 @@ fn namespace_for(path: &Path, index: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_keyring_holds_the_project_keys() {
+        let mut keys = TrustedKeys::new();
+        let ids = keys
+            .add_keyring(BUILTIN_KEYRING.as_bytes(), "built-in")
+            .expect("the built-in keyring loads");
+        let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            ids,
+            [
+                "E38F08952E4891C4",
+                "4102DBFF6CC818E7",
+                "9E95EAD8F3B83A9D",
+                "D6307A0B86E9900B",
+                "0146DC1FDAF84B3D"
+            ]
+        );
+        // The throwaway example key is never part of it.
+        assert!(!ids.iter().any(|i| i == "70EF691BC71E4DD9"));
+    }
 
     #[test]
     fn namespaces_are_valid_and_unique() {

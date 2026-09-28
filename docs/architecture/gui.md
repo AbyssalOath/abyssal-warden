@@ -1,7 +1,9 @@
 # GUI framework evaluation
 
-**Status: proposal.** No GUI exists yet. The CLI and scanner API take
-priority, and this decision is finalised as ADR-0005 when GUI work begins.
+**Status: decided** in [ADR-0021](decisions/0021-desktop-app.md): egui,
+standalone or through the service. The app is `crates/gui`
+(`abyssal-warden-gui`); user guide: [docs/user/gui.md](../user/gui.md).
+The evaluation below is kept as the record of why.
 
 ## Constraints from the security model
 

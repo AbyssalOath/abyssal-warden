@@ -1,0 +1,34 @@
+[package]
+name = "warden-gui"
+description = "Abyssal Warden desktop app (egui): scans, results, updates and quarantine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "abyssal-warden-gui"
+path = "src/main.rs"
+
+[dependencies]
+warden-core.workspace = true
+warden-ipc.workspace = true
+warden-service.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+uuid.workspace = true
+# OpenGL renderer (glow) rather than wgpu: a much smaller dependency tree.
+# AccessKit: screen readers and keyboard navigation.
+eframe = { version = "0.35", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+# Native folder picker (XDG portal on Linux: no GTK build dependency).
+rfd = "0.17"
+
+[dev-dependencies]
+warden-engine.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

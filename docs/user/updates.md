@@ -19,10 +19,10 @@ abyssal-warden scan --installed /home
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--source URL\|DIR` | `$ABYSSAL_WARDEN_UPDATE_SOURCE` | An `https://` URL or a local directory (offline mirror). `http://` is refused |
+| `--source URL\|DIR` | `$ABYSSAL_WARDEN_UPDATE_SOURCE`, else the official channel | An `https://` URL or a local directory (offline mirror). `http://` is refused |
 | `--content-dir DIR` | see below | Where bundles are installed, one subdirectory per bundle name |
 | `--content-state FILE` | as for scans | Rollback and freshness records |
-| `--keyring FILE`, `--trusted-key FILE` | system keyring | Trusted keys. The keyring must give a key the `timestamp` role |
+| `--keyring FILE`, `--trusted-key FILE` | built-in project keyring and system keyring | Trusted keys. The keyring must give a key the `timestamp` role |
 | `--allow-expired` | off | Accept an expired timestamp or bundle (offline mirrors only; stale content misses new threats) |
 | `--format human\|json` | `human` | Output format |
 

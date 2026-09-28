@@ -142,6 +142,12 @@ struct ScanArgs {
     /// Never show the progress line.
     #[arg(long)]
     no_progress: bool,
+    /// Report progress as JSON lines on stderr, for front ends such as the
+    /// GUI: `{"type":"progress","files_scanned":..,"bytes_scanned":..,
+    /// "findings":..,"entries_skipped":..,"issues":..}` at most every
+    /// 250 ms. Final counts are in the report.
+    #[arg(long, conflicts_with = "no_progress")]
+    progress_json: bool,
     /// List skipped entries in human-readable output.
     #[arg(long)]
     show_skipped: bool,
@@ -278,10 +284,16 @@ fn run_scan(args: ScanArgs) -> ExitCode {
     let token = CancellationToken::new();
     install_interrupt_handler(&token);
 
-    let show_progress = !args.no_progress && io::stderr().is_terminal();
-    let mut progress = ProgressLine::new(show_progress);
+    let mode = if args.progress_json {
+        ProgressMode::Json
+    } else if !args.no_progress && io::stderr().is_terminal() {
+        ProgressMode::Line
+    } else {
+        ProgressMode::Off
+    };
+    let mut progress = ProgressLine::new(mode);
     let result = scanner.scan(&token, |ev, stats| progress.update(ev, stats));
-    progress.clear();
+    progress.finish();
 
     let mut report = match result {
         Ok(r) => r,
@@ -407,32 +419,63 @@ pub(crate) fn write_atomically(path: &Path, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProgressMode {
+    Off,
+    /// A redrawn line on a terminal.
+    Line,
+    /// JSON lines for front ends (`--progress-json`).
+    Json,
+}
+
 struct ProgressLine {
-    enabled: bool,
+    mode: ProgressMode,
     last: Option<Instant>,
     drawn: bool,
 }
 
 impl ProgressLine {
     const INTERVAL: Duration = Duration::from_millis(100);
+    const JSON_INTERVAL: Duration = Duration::from_millis(250);
 
-    fn new(enabled: bool) -> Self {
+    fn new(mode: ProgressMode) -> Self {
         Self {
-            enabled,
+            mode,
             last: None,
             drawn: false,
         }
     }
 
+    fn json_line(stats: &ScanStats) {
+        // Counts only: paths are attacker-controlled and stay in the report.
+        eprintln!(
+            r#"{{"type":"progress","files_scanned":{},"bytes_scanned":{},"findings":{},"entries_skipped":{},"issues":{}}}"#,
+            stats.files_scanned,
+            stats.bytes_scanned,
+            stats.findings,
+            stats.entries_skipped,
+            stats.issues
+        );
+    }
+
     fn update(&mut self, event: &ProgressEvent<'_>, stats: &ScanStats) {
-        if !self.enabled {
+        if self.mode == ProgressMode::Off {
             return;
         }
-        let due = self.last.is_none_or(|t| t.elapsed() >= Self::INTERVAL);
+        let interval = if self.mode == ProgressMode::Json {
+            Self::JSON_INTERVAL
+        } else {
+            Self::INTERVAL
+        };
+        let due = self.last.is_none_or(|t| t.elapsed() >= interval);
         if !due && !matches!(event, ProgressEvent::Finding(_)) {
             return;
         }
         self.last = Some(Instant::now());
+        if self.mode == ProgressMode::Json {
+            Self::json_line(stats);
+            return;
+        }
         self.drawn = true;
         // Paths are deliberately not shown: they are attacker-controlled and
         // would need escaping and truncation on every redraw.
@@ -446,7 +489,8 @@ impl ProgressLine {
         );
     }
 
-    fn clear(&mut self) {
+    /// Clears the terminal line.
+    fn finish(&mut self) {
         if self.drawn {
             eprint!("\r\x1b[2K");
             self.drawn = false;

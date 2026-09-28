@@ -116,6 +116,10 @@ manifest does not list are ignored.
 * `bundles[].min_sequence`: the lowest acceptable sequence for that bundle,
   set to the current release when the keyring is published. It protects
   fresh installations. Several keyrings: the highest floor wins.
+* The **built-in keyring**: the project keyring (`keys/keyring.json`) is
+  compiled into the programs and trusted by default, so official content
+  verifies without setup. `--no-builtin-keyring` turns it off. It is
+  loaded first; the system keyring and `--keyring` files apply on top.
 * The **system keyring** (`/etc/abyssal-warden/keyring.json`; Windows
   `%ProgramData%\AbyssalWarden\keyring.json`) is always loaded when present,
   so its revocations also apply to keys given with `--trusted-key`.

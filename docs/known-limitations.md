@@ -106,7 +106,10 @@ See [system-checks.md](detection/system-checks.md#what-the-checks-cannot-do).
   authorisation is by group, not polkit; parser children have no
   seccomp/landlock sandbox yet. Any local user can queue scans up to the
   queue limit unless `socket_group` is set.
-* No GUI or signed releases. The content updater exists, but the project
+* No signed releases. The desktop app is a first version: no
+  notifications, tray icon or in-app history; quarantine management needs
+  the service; not yet tested with screen readers
+  ([desktop app](user/gui.md)). The content updater exists, but the project
   publishes no update channel, content or signing keys yet
   ([updates](user/updates.md)).
 * Scan reports are not signed.
