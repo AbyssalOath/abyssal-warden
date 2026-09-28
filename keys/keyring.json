@@ -1,0 +1,59 @@
+{
+  "format": "abyssal-warden.keyring",
+  "format_version": 1,
+  "policy": {
+    "threshold": 1
+  },
+  "keys": [
+    {
+      "id": "E38F08952E4891C4",
+      "public_key": "RWTEkUgulQiP46cQnTPTwlgqxL/XAgvAamXxEVVwlmneSoPAI8FDy64l",
+      "roles": [
+        "content"
+      ],
+      "description": "Abyssal Warden content A (signs releases)",
+      "not_before": "2026-09-28T00:00:00Z",
+      "not_after": "2028-09-28T00:00:00Z"
+    },
+    {
+      "id": "4102DBFF6CC818E7",
+      "public_key": "RWTnGMhs/9sCQWUbnMbV6H+jsyhbUCMVD+g5XZvlRDyJ57zMrwO/KzfY",
+      "roles": [
+        "content"
+      ],
+      "description": "Abyssal Warden content B (standby)",
+      "not_before": "2026-09-28T00:00:00Z",
+      "not_after": "2028-09-28T00:00:00Z"
+    },
+    {
+      "id": "9E95EAD8F3B83A9D",
+      "public_key": "RWSdOrjz2OqVnvD5kxXLQjQe6m6UKPUBhav3FjtjK2JBe0qp1MPxUtcj",
+      "roles": [
+        "content"
+      ],
+      "description": "Abyssal Warden content C (standby)",
+      "not_before": "2026-09-28T00:00:00Z",
+      "not_after": "2028-09-28T00:00:00Z"
+    },
+    {
+      "id": "D6307A0B86E9900B",
+      "public_key": "RWQLkOmGC3ow1qGDKQrj5QPO8P9whVmeov3AYb7+pOzcJmUJJOvhkzeF",
+      "roles": [
+        "timestamp"
+      ],
+      "description": "Abyssal Warden timestamp, online (GitHub Actions secret)",
+      "not_before": "2026-09-28T00:00:00Z",
+      "not_after": "2028-09-28T00:00:00Z"
+    },
+    {
+      "id": "0146DC1FDAF84B3D",
+      "public_key": "RWQ9S/jaH9xGAZIe6xvXcbdwIfMcpF+XPkJRs0AIrSbkhh0d0dmUi4nY",
+      "roles": [
+        "timestamp"
+      ],
+      "description": "Abyssal Warden timestamp, offline backup",
+      "not_before": "2026-09-28T00:00:00Z",
+      "not_after": "2028-09-28T00:00:00Z"
+    }
+  ]
+}

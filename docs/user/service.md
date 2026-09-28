@@ -69,6 +69,7 @@ world-writable; unknown fields are refused):
 | `scanner_user` | `abyssal-warden` | Account privileged jobs run as |
 | `scanner_binary` | next to `abyssal-wardend` | Must be root-owned |
 | `content`, `keyrings` | none | Signed content bundles and extra keyrings for every job (the system keyring is always used) |
+| `update_source` | none | `https://` URL or absolute directory that `update` schedules install content from ([updates](updates.md#in-the-service)) |
 | `max_concurrent_jobs` | 1 | 1 to 8 |
 | `max_queued_jobs` | 32 | Further requests are refused as busy |
 | `job_timeout_minutes` | 240 | Jobs are killed after this plus one minute |
@@ -76,10 +77,15 @@ world-writable; unknown fields are refused):
 | `audit_check_hours` | 24 | Audit log comparison interval (0: on request only) |
 | `schedules` | none | See below |
 
-A schedule: `name`, `kind` (`scan` or `system_check`), `paths` (scans),
+A schedule: `name`, `kind` (`scan`, `system_check` or `update`), `paths` (scans),
 `every_hours`, optional `at_utc` (`HH:MM`; `every_hours` must then be a
 multiple of 24), `heuristics`, `quarantine` (scans). Times are UTC. A run
 missed while the machine was off starts once when the service starts.
+
+An `update` schedule takes no paths, heuristics or quarantine, needs
+`update_source`, and runs as the scanner account with no capabilities. The
+bundles it installs are used by every later job that runs as the scanner
+account.
 
 ## Hardening
 

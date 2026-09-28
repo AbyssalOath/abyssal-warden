@@ -284,6 +284,7 @@ impl Manager {
         let caps = match spec.kind {
             JobKind::Scan => runner::SCAN_CAPS,
             JobKind::SystemCheck => runner::SYSTEM_CHECK_CAPS,
+            JobKind::Update => runner::UPDATE_CAPS,
         };
         match (spec.run_as, self.env.scanner) {
             (RunAs::Service, Some((uid, gid))) => Ok(Identity::Account { uid, gid, caps }),
@@ -323,10 +324,13 @@ impl Manager {
             }
         };
         let timeout_secs = u64::from(self.env.cfg.job_timeout_minutes) * 60;
+        let installed = child_dir.join("content");
         let args = child_args(
             spec,
             &self.env.cfg,
             &child_dir.join("content-state.json"),
+            &installed,
+            has_installed_content(&installed),
             timeout_secs,
         );
         let cmd = match runner::command(
@@ -398,6 +402,15 @@ impl Manager {
                     return JobResult::failed(format!("unreadable scan report: {e}; {}", stderr()));
                 }
             },
+            JobKind::Update => match serde_json::from_slice::<serde_json::Value>(&outcome.stdout) {
+                Ok(_) => outcome.stdout.clone(),
+                Err(e) => {
+                    return JobResult::failed(format!(
+                        "unreadable update report: {e}; {}",
+                        stderr()
+                    ));
+                }
+            },
             JobKind::SystemCheck => {
                 match serde_json::from_slice::<serde_json::Value>(&outcome.stdout) {
                     Ok(v) => {
@@ -463,15 +476,42 @@ impl Manager {
     }
 }
 
-/// Arguments for the `abyssal-warden` child.
+/// Whether `dir` holds at least one installed bundle (a subdirectory with a
+/// manifest), as `update` jobs leave them.
+fn has_installed_content(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries.flatten().any(|e| {
+            !e.file_name().to_string_lossy().starts_with('.')
+                && e.path().join("manifest.json").is_file()
+        })
+    })
+}
+
+/// Arguments for the `abyssal-warden` child. `installed` is where `update`
+/// jobs install bundles; other jobs use it when `use_installed`.
 pub(crate) fn child_args(
     spec: &JobSpec,
     cfg: &ServiceConfig,
     state_file: &Path,
+    installed: &Path,
+    use_installed: bool,
     timeout_secs: u64,
 ) -> Vec<OsString> {
     let content = &cfg.content;
     let mut a: Vec<OsString> = Vec::new();
+    if spec.kind == JobKind::Update {
+        a.extend(["update", "--format", "json", "--source"].map(OsString::from));
+        a.push(cfg.update_source.clone().unwrap_or_default().into());
+        a.push("--content-dir".into());
+        a.push(installed.into());
+        a.push("--content-state".into());
+        a.push(state_file.into());
+        for k in &cfg.keyrings {
+            a.push("--keyring".into());
+            a.push(k.clone().into());
+        }
+        return a;
+    }
     match spec.kind {
         JobKind::Scan => {
             a.extend(
@@ -493,6 +533,7 @@ pub(crate) fn child_args(
         JobKind::SystemCheck => {
             a.extend(["system-check", "--format", "json"].map(OsString::from));
         }
+        JobKind::Update => {} // Returned above.
     }
     if spec.heuristics {
         a.push("--heuristics".into());
@@ -505,7 +546,12 @@ pub(crate) fn child_args(
         a.push("--keyring".into());
         a.push(k.clone().into());
     }
-    if !content.is_empty() {
+    if use_installed {
+        a.push("--installed".into());
+        a.push("--content-dir".into());
+        a.push(installed.into());
+    }
+    if !content.is_empty() || use_installed {
         a.push("--content-state".into());
         a.push(state_file.into());
     }
@@ -573,10 +619,17 @@ mod tests {
             keyrings: vec![PathBuf::from("/etc/k.json")],
             ..ServiceConfig::default()
         };
-        let a: Vec<String> = child_args(&spec, &cfg, Path::new("/s/cs.json"), 60)
-            .into_iter()
-            .map(|s| s.into_string().unwrap_or_default())
-            .collect();
+        let a: Vec<String> = child_args(
+            &spec,
+            &cfg,
+            Path::new("/s/cs.json"),
+            Path::new("/s/c"),
+            false,
+            60,
+        )
+        .into_iter()
+        .map(|s| s.into_string().unwrap_or_default())
+        .collect();
         assert_eq!(
             a,
             [
@@ -607,10 +660,69 @@ mod tests {
             quarantine: false,
             ..spec
         };
-        let a: Vec<String> = child_args(&sys, &ServiceConfig::default(), Path::new("/x"), 60)
-            .into_iter()
-            .map(|s| s.into_string().unwrap_or_default())
-            .collect();
-        assert_eq!(a, ["system-check", "--format", "json", "--heuristics"]);
+        let args = |spec: &JobSpec, cfg: &ServiceConfig, installed: bool| -> Vec<String> {
+            child_args(spec, cfg, Path::new("/x"), Path::new("/c"), installed, 60)
+                .into_iter()
+                .map(|s| s.into_string().unwrap_or_default())
+                .collect()
+        };
+        let cfg = ServiceConfig::default();
+        assert_eq!(
+            args(&sys, &cfg, false),
+            ["system-check", "--format", "json", "--heuristics"]
+        );
+        assert_eq!(
+            args(&sys, &cfg, true),
+            [
+                "system-check",
+                "--format",
+                "json",
+                "--heuristics",
+                "--installed",
+                "--content-dir",
+                "/c",
+                "--content-state",
+                "/x"
+            ]
+        );
+        let upd = JobSpec {
+            kind: JobKind::Update,
+            heuristics: false,
+            ..sys
+        };
+        let cfg = ServiceConfig {
+            update_source: Some("https://updates.example/aw".into()),
+            keyrings: vec![PathBuf::from("/etc/k.json")],
+            ..ServiceConfig::default()
+        };
+        assert_eq!(
+            args(&upd, &cfg, true),
+            [
+                "update",
+                "--format",
+                "json",
+                "--source",
+                "https://updates.example/aw",
+                "--content-dir",
+                "/c",
+                "--content-state",
+                "/x",
+                "--keyring",
+                "/etc/k.json"
+            ]
+        );
+    }
+
+    #[test]
+    fn installed_content_needs_a_manifest() {
+        let d = tempfile::tempdir().expect("tempdir");
+        assert!(!has_installed_content(&d.path().join("missing")));
+        std::fs::create_dir_all(d.path().join("b")).expect("mkdir");
+        assert!(!has_installed_content(d.path()));
+        std::fs::create_dir_all(d.path().join(".staging-1")).expect("mkdir");
+        std::fs::write(d.path().join(".staging-1/manifest.json"), b"{}").expect("write");
+        assert!(!has_installed_content(d.path()));
+        std::fs::write(d.path().join("b/manifest.json"), b"{}").expect("write");
+        assert!(has_installed_content(d.path()));
     }
 }

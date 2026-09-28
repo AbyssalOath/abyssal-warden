@@ -85,6 +85,9 @@ struct RuleMeta {
     name: String,
     rule_version: Option<u32>,
     description: Option<String>,
+    /// Standard `author`, `reference` and `license` metadata, kept for
+    /// attribution (some rule licences require it in match results).
+    attribution: Vec<(&'static str, String)>,
 }
 
 /// Compiled, validated YARA rules.
@@ -297,10 +300,25 @@ impl YaraDetector {
                 database_name: db.map(|d| d.name.clone()),
                 database_version: db.map(|d| d.version.clone()),
             },
-            evidence: vec![Evidence {
-                kind: EvidenceKind::YaraRuleMatch,
-                summary,
-            }],
+            evidence: {
+                let mut ev = vec![Evidence {
+                    kind: EvidenceKind::YaraRuleMatch,
+                    summary,
+                }];
+                if !meta.attribution.is_empty() {
+                    let text = meta
+                        .attribution
+                        .iter()
+                        .map(|(k, v)| format!("{k}: {v}"))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    ev.push(Evidence {
+                        kind: EvidenceKind::YaraRuleMatch,
+                        summary: format!("Rule {text}"),
+                    });
+                }
+                ev
+            },
             explanation,
             recommended_action: recommended_action(meta),
             remediation_guidance: None,
@@ -353,6 +371,7 @@ fn parse_meta(rule: &yara_x::Rule<'_, '_>) -> Result<RuleMeta, YaraLoadError> {
         name: rule.identifier().to_owned(),
         rule_version: None,
         description: None,
+        attribution: Vec::new(),
     };
 
     for (key, value) in rule.metadata() {
@@ -432,6 +451,20 @@ fn parse_meta(rule: &yara_x::Rule<'_, '_>) -> Result<RuleMeta, YaraLoadError> {
                     && !has_unsafe_chars(t, true)
                 {
                     m.description = Some(t.to_owned());
+                }
+            }
+            "author" | "reference" | "license" => {
+                let label = match key {
+                    "author" => "author",
+                    "reference" => "reference",
+                    _ => "licence",
+                };
+                if let Some(t) = text
+                    && t.len() <= MAX_META_TEXT
+                    && !has_unsafe_chars(t, false)
+                    && !m.attribution.iter().any(|(l, _)| *l == label)
+                {
+                    m.attribution.push((label, t.to_owned()));
                 }
             }
             k if k.starts_with("aw_") => return Err(err(k, "is not a recognised aw_* key")),

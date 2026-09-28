@@ -33,6 +33,11 @@ remediation platform for Windows and Linux, written in Rust.
 * **Signed content**: databases and rules must carry a valid minisign
   signature from a trusted key unless explicitly allowed otherwise. Signed
   **content bundles** add rollback, expiry and key-revocation protection.
+* **Content updates** (`abyssal-warden update`, service schedules): signed
+  bundles fetched over https or from a mirror, checked against a signed
+  freshness timestamp, fully verified in staging and installed atomically
+  ([docs/user/updates.md](docs/user/updates.md)). The project does not run
+  an update channel yet.
 * **Single, bounded read per file**, shared by all detectors, with a
   per-file time limit; a watchdog ensures no file can hang a scan.
 * **ZIP archive scanning** (including JAR, APK, Office documents and nested
@@ -66,7 +71,8 @@ remediation platform for Windows and Linux, written in Rust.
   are available as versioned JSON or as human-readable text.
 * **CLI**: `abyssal-warden scan`, `hash`, `signatures validate`,
   `yara validate`, `quarantine add|list|show|restore|delete|verify-log`,
-  `content manifest|verify`, `system-check`, `service ...`; daemon
+  `content manifest|timestamp|import-hashes|import-yara|verify`, `update`,
+  `system-check`, `service ...`; daemon
   `abyssal-wardend`.
 
 Every capability above has automated tests, including tests for hostile file

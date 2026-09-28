@@ -32,7 +32,7 @@ use crate::trust::{KeyId, TrustError, TrustedKeys, read_bounded, signature_path}
 pub const MANIFEST_FILE: &str = "manifest.json";
 /// Value of the manifest's `format` field.
 pub const MANIFEST_FORMAT: &str = "abyssal-warden.content-manifest";
-const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_SIGNATURE_BYTES: u64 = 4096;
 /// Signature files read per manifest: `manifest.json.minisig` and
 /// `manifest.json.minisig.2` through `.16`.
@@ -50,6 +50,9 @@ const MAX_PATH_LEN: usize = 512;
 pub enum ContentKind {
     HashDatabase,
     YaraRules,
+    /// Licence, attribution or source notice for the bundle's content (text;
+    /// not used for detection). Third-party content must carry its licence.
+    Notice,
 }
 
 /// One content file listed in a manifest.
@@ -385,7 +388,7 @@ fn read_listed(root: &cap_std::fs::Dir, entry: &ManifestFile) -> Result<Vec<u8>,
 }
 
 /// Bundle names: `[A-Za-z0-9._-]`, 1-128 characters.
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= MAX_NAME_LEN
         && name

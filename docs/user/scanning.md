@@ -19,6 +19,8 @@ unless you pass `--allow-unsigned`. See
 | `-s, --signatures FILE` | none | Hash signature database; repeatable. An invalid or unverifiable database aborts the scan |
 | `-y, --yara PATH` | none | YARA rule file or directory of `*.yar`/`*.yara`; repeatable ([yara.md](../detection/yara.md)) |
 | `--content DIR` | none | Signed content bundle (rollback and expiry protected); repeatable ([content-trust.md](../security/content-trust.md)) |
+| `--installed` | off | Also load every bundle installed by `abyssal-warden update` ([updates](updates.md)); fails if none is installed |
+| `--content-dir DIR` | per user | With `--installed`: the content directory to load from |
 | `--keyring FILE` | system keyring if present | Keyring of trusted keys with validity and revocation; repeatable |
 | `--allow-expired` | off | Accept expired bundles (recorded in the report) |
 | `--content-state FILE` | per user | Rollback-protection state |

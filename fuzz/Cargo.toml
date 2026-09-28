@@ -9,6 +9,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+serde_json = "1"
+time = "0.3"
 warden-core = { path = "../crates/core" }
 warden-engine = { path = "../crates/engine" }
 warden-heuristics = { path = "../crates/heuristics" }
@@ -16,6 +18,13 @@ warden-ipc = { path = "../crates/ipc" }
 warden-yara = { path = "../crates/yara" }
 warden-remediation = { path = "../crates/remediation" }
 warden-system = { path = "../crates/system" }
+
+[[bin]]
+name = "content-metadata"
+path = "fuzz_targets/content_metadata.rs"
+test = false
+doc = false
+bench = false
 
 # Kept out of the main workspace: it needs nightly and cargo-fuzz.
 [workspace]

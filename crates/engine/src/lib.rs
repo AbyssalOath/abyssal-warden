@@ -16,6 +16,7 @@
 mod archive;
 pub mod bundle;
 pub mod content_state;
+pub mod freshness;
 mod fsio;
 mod scanner;
 pub mod signatures;

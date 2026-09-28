@@ -70,6 +70,11 @@ pub struct ServiceConfig {
     /// (`/etc/abyssal-warden/keyring.json`, always loaded).
     #[serde(default)]
     pub keyrings: Vec<PathBuf>,
+    /// Where `update` schedules fetch signed content: an `https://` URL or
+    /// an absolute directory (a local mirror). Installed bundles are used by
+    /// every job that runs as the service account.
+    #[serde(default)]
+    pub update_source: Option<String>,
     #[serde(default = "one")]
     pub max_concurrent_jobs: u32,
     #[serde(default = "default_queue")]
@@ -194,6 +199,15 @@ impl ServiceConfig {
                 ));
             }
         }
+        if let Some(src) = &self.update_source {
+            let ok = src.starts_with("https://") && src.len() > 8
+                || Path::new(src).is_absolute() && !src.contains("://");
+            if !ok || src.len() > 2048 || src.chars().any(char::is_control) {
+                return Err(format!(
+                    "update_source {src:?} must be an https:// URL or an absolute directory"
+                ));
+            }
+        }
         if self.schedules.len() > MAX_SCHEDULES {
             return Err(format!("at most {MAX_SCHEDULES} schedules"));
         }
@@ -240,6 +254,20 @@ impl ServiceConfig {
                     if !s.paths.is_empty() || s.quarantine {
                         return Err(format!(
                             "schedule {}: a system check takes no paths and does not quarantine",
+                            s.name
+                        ));
+                    }
+                }
+                JobKind::Update => {
+                    if !s.paths.is_empty() || s.quarantine || s.heuristics {
+                        return Err(format!(
+                            "schedule {}: an update takes no paths, heuristics or quarantine",
+                            s.name
+                        ));
+                    }
+                    if self.update_source.is_none() {
+                        return Err(format!(
+                            "schedule {}: an update needs update_source",
                             s.name
                         ));
                     }
@@ -344,6 +372,13 @@ mod tests {
         let ok = parse(r#"{"schedules":[{"name":"daily-home","paths":["/home"],"every_hours":24,"at_utc":"03:30","heuristics":true},
                                         {"name":"sys","kind":"system_check","every_hours":6}]}"#).expect("valid");
         assert_eq!(ok.schedules.len(), 2);
+        for src in ["https://updates.example/aw", "/srv/mirror"] {
+            let c = parse(&format!(
+                r#"{{"update_source":"{src}","schedules":[{{"name":"u","kind":"update","every_hours":6}}]}}"#
+            ))
+            .expect("valid");
+            assert_eq!(c.schedules[0].kind, JobKind::Update);
+        }
     }
 
     #[test]
@@ -360,6 +395,10 @@ mod tests {
             r#"{"schedules":[{"name":"a","paths":["/x"],"every_hours":1},{"name":"a","paths":["/y"],"every_hours":1}]}"#,
             r#"{"schedules":[{"name":"../a","paths":["/x"],"every_hours":1}]}"#,
             r#"{"schedules":[{"name":"s","kind":"system_check","every_hours":1,"quarantine":true}]}"#,
+            r#"{"schedules":[{"name":"u","kind":"update","every_hours":6}]}"#,
+            r#"{"update_source":"http://x","schedules":[{"name":"u","kind":"update","every_hours":6}]}"#,
+            r#"{"update_source":"https://x","schedules":[{"name":"u","kind":"update","every_hours":6,"paths":["/"]}]}"#,
+            r#"{"update_source":"relative/dir"}"#,
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }

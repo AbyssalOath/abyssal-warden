@@ -960,11 +960,11 @@ mod bundles {
         assert_eq!(manifest(&["--name", "x"]).status.code(), Some(2));
         fs::remove_file(d.join("broken.json")).unwrap();
 
-        fs::write(d.join("notes.txt"), b"hello").unwrap();
+        fs::write(d.join("notes.bin"), b"hello").unwrap();
         let out = manifest(&["--name", "x"]);
         assert_eq!(out.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&out.stderr).contains("unknown content file"));
-        fs::remove_file(d.join("notes.txt")).unwrap();
+        fs::remove_file(d.join("notes.bin")).unwrap();
 
         fs::copy(example_db(), d.join("db.json")).unwrap();
         assert_eq!(manifest(&["--name", "x"]).status.code(), Some(0));
@@ -980,6 +980,209 @@ mod bundles {
         );
     }
 
+    #[test]
+    fn importers_group_prefix_and_drop_what_matches_clean_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let clean = d.join("clean");
+        fs::create_dir_all(&clean).unwrap();
+        fs::write(clean.join("tool.txt"), b"an ordinary clean-marker file").unwrap();
+        let out = run(bin().arg("hash").arg(clean.join("tool.txt")));
+        let clean_hash = String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_owned();
+
+        // Hash lists in per-campaign directories, one listing a clean file.
+        for (campaign, hashes) in [
+            ("camp_A", format!("{clean_hash}\n{}\n", "a".repeat(64))),
+            ("campB", format!("{}\n", "b".repeat(64))),
+        ] {
+            fs::create_dir_all(d.join(campaign)).unwrap();
+            fs::write(d.join(campaign).join("samples.sha256"), hashes).unwrap();
+        }
+        let db = d.join("out/feed.json");
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let out = run(bin()
+            .args([
+                "content",
+                "import-hashes",
+                "--db-name",
+                "feed",
+                "--db-version",
+                "1",
+            ])
+            .args([
+                "--detection-name",
+                "Feed",
+                "--id-prefix",
+                "FEED",
+                "--license",
+                "test",
+            ])
+            .args(["--name-by-directory", "--clean-corpus"])
+            .arg(&clean)
+            .arg("-o")
+            .arg(&db)
+            .arg(d.join("camp_A/samples.sha256"))
+            .arg(d.join("campB/samples.sha256")));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            stdout.contains(&format!("dropped {clean_hash}: matches clean file")),
+            "{stdout}"
+        );
+        assert!(stdout.contains("2 signature(s)"), "{stdout}");
+        let v: serde_json::Value = serde_json::from_slice(&fs::read(&db).unwrap()).unwrap();
+        let names: Vec<&str> = v["signatures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["Feed.camp-A", "Feed.campB"]);
+
+        // Rules: a prefix on every copied file, and a rule that fires on a
+        // clean file is dropped with the reason.
+        let rules = d.join("rules");
+        fs::create_dir_all(&rules).unwrap();
+        fs::write(
+            rules.join("fp.yar"),
+            "rule fp { strings: $a = \"clean-marker\" condition: $a }",
+        )
+        .unwrap();
+        fs::write(
+            rules.join("ok.yar"),
+            "rule ok { strings: $a = \"synthetic-evil\" condition: $a }",
+        )
+        .unwrap();
+        let out = run(bin()
+            .args(["content", "import-yara", "--prefix", "x-", "--clean-corpus"])
+            .arg(&clean)
+            .arg("-o")
+            .arg(d.join("out"))
+            .arg(&rules));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.code(), Some(0), "{stdout}");
+        assert!(stdout.contains("rule fp matched clean file"), "{stdout}");
+        assert!(stdout.contains("accepted 1 rule file(s)"), "{stdout}");
+        assert!(d.join("out/x-ok.yar").is_file());
+        assert!(!d.join("out/x-fp.yar").exists());
+    }
+
+    #[test]
+    fn importers_convert_feeds_and_skip_bad_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        // Synthetic digests only (these are hashes of short test strings).
+        let list = d.join("samples.sha256");
+        fs::write(
+            &list,
+            format!(
+                "# feed header\n{}  a.bin\n{}\nnot-a-hash\n",
+                "a".repeat(64),
+                "B".repeat(64)
+            ),
+        )
+        .unwrap();
+        let out_db = d.join("bundle").join("feed.json");
+        fs::create_dir_all(out_db.parent().unwrap()).unwrap();
+        let import = |extra: &[&str]| {
+            let mut c = bin();
+            c.args([
+                "content",
+                "import-hashes",
+                "--db-name",
+                "feed",
+                "--db-version",
+                "1",
+            ])
+            .args(["--detection-name", "Feed.Test", "--id-prefix", "FEED"])
+            .args(["--license", "BSD-2-Clause (test)", "-o"])
+            .arg(&out_db)
+            .arg(&list)
+            .args(extra);
+            run(&mut c)
+        };
+        let out = import(&[]);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(String::from_utf8_lossy(&out.stdout).contains("2 signature(s); 1 line(s)"));
+        let db: serde_json::Value = serde_json::from_slice(&fs::read(&out_db).unwrap()).unwrap();
+        assert_eq!(db["database"]["license"], "BSD-2-Clause (test)");
+        assert_eq!(db["signatures"][1]["sha256"], "b".repeat(64));
+        assert_eq!(import(&[]).status.code(), Some(2), "must not overwrite");
+        assert_eq!(import(&["--force"]).status.code(), Some(0));
+
+        let rules = d.join("feed-rules");
+        fs::create_dir_all(rules.join("sub")).unwrap();
+        fs::write(
+            rules.join("good.yar"),
+            "rule good { strings: $a = \"synthetic-marker\" condition: $a }",
+        )
+        .unwrap();
+        fs::write(
+            rules.join("sub/include.yar"),
+            "include \"x.yar\"\nrule inc { condition: true }",
+        )
+        .unwrap();
+        fs::write(
+            rules.join("sub/external.yara"),
+            "rule ext { condition: filename == \"x\" }",
+        )
+        .unwrap();
+        fs::write(rules.join("skipme.yar"), "rule skip { condition: true }").unwrap();
+        fs::write(rules.join("readme.md"), "not a rule").unwrap();
+        let exclude = d.join("exclude.txt");
+        fs::write(&exclude, "# needs external variables\nskipme.yar\n").unwrap();
+        let accepted = d.join("bundle").join("rules");
+        let mut c = bin();
+        c.args(["content", "import-yara", "-o"])
+            .arg(&accepted)
+            .arg("--exclude")
+            .arg(&exclude)
+            .arg(&rules);
+        let out = run(&mut c);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(stdout.contains("accepted 1 rule file(s)"), "{stdout}");
+        assert!(stdout.contains("skipped 3"), "{stdout}");
+        assert!(stdout.contains("skipme.yar: excluded"), "{stdout}");
+        let names: Vec<_> = fs::read_dir(&accepted)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["good.yar"]);
+
+        // The output is valid bundle content, but not flat.
+        let manifest = |extra: &[&str]| {
+            let mut c = bin();
+            c.args(["content", "manifest", "--name", "feed", "--sequence", "1"])
+                .args(extra)
+                .arg(d.join("bundle"));
+            run(&mut c)
+        };
+        let out = manifest(&["--flat"]);
+        assert_eq!(out.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("subdirectories"));
+        assert_eq!(manifest(&[]).status.code(), Some(0));
+    }
+
     /// A keyring trusting `keys`, with extra top-level fields.
     fn keyring_of(path: &Path, keys: &[&Key], extra: &str) -> PathBuf {
         let entries: Vec<String> = keys.iter().map(|k| k.entry()).collect();
@@ -992,6 +1195,110 @@ mod bundles {
         )
         .unwrap();
         path.to_owned()
+    }
+
+    #[test]
+    fn update_installs_signed_content_and_scans_use_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let (content, stamp) = (Key::new(), Key::new());
+        // Publisher: a bundle with a licence notice, and a timestamp.
+        let mirror = d.join("mirror");
+        fs::create_dir_all(&mirror).unwrap();
+        fs::write(
+            mirror.join("LICENSE.txt"),
+            "Synthetic test content, CC0-1.0\n",
+        )
+        .unwrap();
+        make_bundle(&mirror, &content, 1, "");
+        let manifest = fs::read_to_string(mirror.join("manifest.json")).unwrap();
+        assert!(manifest.contains("\"notice\""), "{manifest}");
+        let stamp_out = run(bin()
+            .args(["content", "timestamp", "--version", "1"])
+            .arg(&mirror));
+        assert_eq!(
+            stamp_out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&stamp_out.stderr)
+        );
+        stamp.sign(&mirror.join("timestamp.json"));
+        let keyring = d.join("keyring.json");
+        fs::write(
+            &keyring,
+            format!(
+                r#"{{"format":"abyssal-warden.keyring","format_version":1,"keys":[{{"id":"{}","public_key":"{}"}},{{"id":"{}","public_key":"{}","roles":["timestamp"]}}]}}"#,
+                content.id(),
+                content.pk.to_base64(),
+                stamp.id(),
+                stamp.pk.to_base64()
+            ),
+        )
+        .unwrap();
+
+        // Client: update, then scan with what was installed.
+        let installed = d.join("installed");
+        let state = d.join("state.json");
+        let update = || {
+            run(bin()
+                .args(["update", "--source"])
+                .arg(&mirror)
+                .arg("--content-dir")
+                .arg(&installed)
+                .arg("--content-state")
+                .arg(&state)
+                .arg("--keyring")
+                .arg(&keyring))
+        };
+        let out = update();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout)
+                .contains("updated bundle \"cli-test\": sequence none -> 1")
+        );
+        assert!(installed.join("cli-test/LICENSE.txt").is_file());
+        let again = update();
+        assert!(String::from_utf8_lossy(&again.stdout).contains("up to date"));
+
+        let target = d.join("target");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("indicator.bin"), INDICATOR).unwrap();
+        let scan = run(bin()
+            .args(["scan", "--format", "json", "--installed", "--content-dir"])
+            .arg(&installed)
+            .arg("--content-state")
+            .arg(&state)
+            .arg("--keyring")
+            .arg(&keyring)
+            .arg(&target));
+        assert_eq!(
+            scan.status.code(),
+            Some(1),
+            "{}",
+            String::from_utf8_lossy(&scan.stderr)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&scan.stdout).unwrap();
+        assert_eq!(v["content_bundles"][0]["name"], "cli-test");
+
+        // A timestamp signed by a content key (not a timestamp key) is refused.
+        let out = run(bin()
+            .args(["content", "timestamp", "--version", "2"])
+            .arg(&mirror));
+        assert_eq!(out.status.code(), Some(0));
+        content.sign(&mirror.join("timestamp.json"));
+        let refused = update();
+        assert_eq!(refused.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&refused.stderr)
+                .contains("does not verify with any trusted key"),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
     }
 
     #[test]
@@ -1129,6 +1436,40 @@ mod bundles {
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(String::from_utf8_lossy(&out.stdout).contains("sequence 1, 2 file(s)"));
+    }
+
+    #[test]
+    fn key_entries_build_a_working_keyring() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = |role: &str| {
+            let out = run(bin()
+                .args(["content", "key-entry", "--role", role])
+                .arg(examples().join("keys/synthetic-test.pub")));
+            assert_eq!(out.status.code(), Some(0));
+            let line = String::from_utf8(out.stdout).unwrap();
+            line.trim().trim_end_matches(',').to_owned()
+        };
+        let verify = |entry: &str| {
+            let ring = dir.path().join("ring.json");
+            fs::write(
+                &ring,
+                format!(
+                    r#"{{"format":"abyssal-warden.keyring","format_version":1,"keys":[{entry}]}}"#
+                ),
+            )
+            .unwrap();
+            run(bin()
+                .args(["content", "verify", "--keyring"])
+                .arg(&ring)
+                .arg("--content-state")
+                .arg(dir.path().join("s.json"))
+                .arg(examples().join("bundle")))
+        };
+        let content = entry("content");
+        assert!(content.contains("70EF691BC71E4DD9"), "{content}");
+        assert_eq!(verify(&content).status.code(), Some(0));
+        // A timestamp-only key cannot sign bundles.
+        assert_eq!(verify(&entry("timestamp")).status.code(), Some(2));
     }
 }
 

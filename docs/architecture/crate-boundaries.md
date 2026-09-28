@@ -48,7 +48,8 @@ crate's command-pattern table. The CLI composes them.
   display, report rendering and sanitisation, exit codes, Ctrl-C handling,
   quarantine commands.
 * **Dependencies:** warden-core, warden-engine, warden-yara,
-  warden-remediation, warden-system, clap, ctrlc, serde, serde_json, tempfile, time.
+  warden-remediation, warden-system, warden-update, clap, ctrlc, serde,
+  serde_json, tempfile, time.
 
 ### `warden-yara` (library)
 
@@ -106,6 +107,19 @@ crate's command-pattern table. The CLI composes them.
   external tools (rpm/dpkg), and will need different privileges in the
   service. It stays read-only
   ([ADR-0015](decisions/0015-system-checks.md)).
+
+### `warden-update` (library)
+
+* **Contains:** update sources (https URL or directory), timestamp and
+  manifest checks, staged download with size and hash checks, final
+  verification through the engine's bundle loader, atomic swap and
+  recovery ([ADR-0020](decisions/0020-content-updates.md)).
+* **Dependencies:** warden-core, warden-engine, ureq (rustls with ring,
+  platform certificate verifier), getrandom, serde_json, sha2, thiserror,
+  time. Content parsing is passed in by the caller, so it does not depend on
+  warden-yara.
+* **Why separate:** it is the only crate with network access, and keeps
+  the HTTP and TLS dependency tree out of the engine and the service.
 
 ## Planned crates and the reason for each
 

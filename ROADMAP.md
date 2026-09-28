@@ -24,11 +24,16 @@ that list.
 | 5 | Linux persistence and integrity checks | **done** |
 | 6 | Heuristics | **done** (PE rules await a Windows measurement) |
 | 7 | Service, authenticated IPC, privilege separation, scheduling | **done** (Linux; Windows transport in 8) |
-| 8 | Windows parity: quarantine store, locked files, file IDs, service transport | next |
-| 9+ | Real-time protection, updater, signed releases, GUI, detection evaluation | research |
+| 8 | Windows parity: quarantine store, locked files, file IDs, service transport | **done** (not yet run on a real Windows machine) |
+| 9 | Own detection content, auto-updated: key roles, signed timestamps, `update` command and service schedule, feed importers, licence review | **in progress**: code and channel kit done; hosting (GitHub Releases) and key custody (Actions secret plus offline backup) decided; feeds chosen (ESET malware-ioc, ReversingLabs; signature-base later) and the build pipeline done and trial-run; next: keyring, content repository setup, first signed release ([ADR-0020](docs/architecture/decisions/0020-content-updates.md)) |
+| 10 | Persistence removal (disable and back up units, cron entries, Run keys; undo and audit) | planned |
+| 11 | Rescue media and boot integrity (offline scan and clean from trusted media; TPM event log) | planned |
+| 12 | Real-time protection on Linux (fanotify) | research |
+| 13 | Real-time protection on Windows (minifilter driver or AMSI provider) | research |
 
-Shipping real signatures or rules is a content-sourcing decision (licensing),
-not a code change, and is tracked separately.
+The README's statement that the project ships no signatures of its own
+changes only when content is published **and** detection rates are measured
+([evaluation methodology](docs/detection/testing.md)).
 
 ## 1. Scanner foundation: done (0.1.0)
 
@@ -51,7 +56,9 @@ not a code change, and is tracked separately.
 * done: ZIP archive scanning with bomb limits ([archives.md](docs/detection/archives.md))
 * planned: further archive formats (7z, tar/gzip, CAB, MSI/OLE) after parser review
 * done: signed content bundles with rollback, expiry and keyring revocation ([content-trust.md](docs/security/content-trust.md))
-* planned: automatic updater (TUF) with threshold signatures
+* done: automatic content updater with signed freshness timestamps, key roles, staged verification and atomic install ([ADR-0020](docs/architecture/decisions/0020-content-updates.md), [updates](docs/user/updates.md))
+* done: importers for hash lists and third-party YARA files; licence review of candidate feeds ([content-sources.md](docs/detection/content-sources.md))
+* planned: publishing pipeline (scheduled import, clean-corpus false-positive filter, signing) and a project update channel on GitHub Releases (flat bundles: `content manifest --flat`)
 * done: PE and ELF structure, name, script and location heuristics ([heuristics.md](docs/detection/heuristics.md), [ADR-0017](docs/architecture/decisions/0017-file-heuristics.md))
 * planned: measure PE heuristics on a Windows corpus, then decide which run by default
 * research: pattern/family signature format
@@ -60,7 +67,7 @@ not a code change, and is tracked separately.
 
 * done: store, restore, delete, hash-chained audit log, journaled crash recovery ([quarantine.md](docs/security/quarantine.md))
 * done: automatic policy (confirmed malware hash matches only, never system directories)
-* planned: Windows store (DACL-hardened, by-handle operations)
+* done: Windows store (DACL-hardened, by-handle operations; [ADR-0019](docs/architecture/decisions/0019-windows-unsafe-boundary.md))
 * done: allow-list for restored files; audit log anchored in syslog/journald; stopping processes running a quarantined file ([ADR-0014](docs/architecture/decisions/0014-remediation-completeness.md))
 * planned: persistence cleanup (the Phase 5 inventory identifies what to remove)
 
@@ -71,7 +78,8 @@ not a code change, and is tracked separately.
 * done: scans in reduced-privilege, killable child processes; hardened systemd unit
 * done: automatic comparison of the quarantine audit log with the journal
 * planned: seccomp/landlock for scanner children; polkit
-* planned: Windows service (SCM) and named-pipe transport (Phase 8)
+* done: Windows service (SCM) and named-pipe transport ([ADR-0019](docs/architecture/decisions/0019-windows-unsafe-boundary.md))
+* done: scheduled content updates run without capabilities
 
 ## 5. Windows security integrations: started
 

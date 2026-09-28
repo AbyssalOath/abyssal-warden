@@ -271,6 +271,8 @@ pub enum Reply {
 pub enum JobKind {
     Scan,
     SystemCheck,
+    /// Download and install signed content from the configured source.
+    Update,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

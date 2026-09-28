@@ -87,8 +87,9 @@ pub(crate) fn run(args: SystemCheckArgs) -> ExitCode {
 }
 
 fn run_inner(args: &SystemCheckArgs) -> Result<u8, String> {
-    let has_content =
-        !args.signatures.is_empty() || !args.yara.is_empty() || !args.bundles.dirs.is_empty();
+    let has_content = !args.signatures.is_empty()
+        || !args.yara.is_empty()
+        || (!args.bundles.dirs.is_empty() || args.bundles.installed);
     let wants_content = !args.no_referenced_scan && (has_content || args.heuristics);
     let (mut detectors, bundle_infos) = if wants_content && has_content {
         load_detectors(&args.signatures, &args.yara, &args.trust, &args.bundles)?

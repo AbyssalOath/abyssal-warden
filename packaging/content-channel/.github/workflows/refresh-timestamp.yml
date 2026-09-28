@@ -1,0 +1,106 @@
+# Re-signs timestamp.json on the latest content release so clients know the
+# channel is fresh. Copy to the content repository (see ../../README.md).
+#
+# Security notes:
+# * The only secret is the online timestamp key (TIMESTAMP_SECRET_KEY), in
+#   the `timestamp-signing` environment, which must be limited to the
+#   default branch. It can delay updates, never change content.
+# * No third-party actions: only tools preinstalled on the runner (gh,
+#   python3) plus minisign from Ubuntu's archive.
+# * User input (the tag) is passed through the environment, never
+#   interpolated into scripts, and validated.
+
+name: Refresh update timestamp
+
+on:
+  schedule:
+    # Twice a day; timestamps last 72 hours, so two days of failed runs
+    # still leave a valid timestamp.
+    - cron: "17 3,15 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release to stamp (default: the latest). Give a draft's tag to stamp it before publishing."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-timestamp
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    environment: timestamp-signing
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      TAG_INPUT: ${{ inputs.tag }}
+    steps:
+      - name: Install minisign
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends minisign
+          minisign -v
+
+      - name: Fetch the script and public keys
+        run: gh repo clone "$REPO" repo -- --depth 1 --quiet
+
+      - name: Choose the release
+        id: choose
+        run: |
+          set -euo pipefail
+          latest=$(gh release view --repo "$REPO" --json tagName --jq .tagName 2>/dev/null || true)
+          if [ -z "$latest" ] && [ -z "$TAG_INPUT" ]; then
+            echo "::notice::no content release published yet; nothing to stamp"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tag="${TAG_INPUT:-$latest}"
+          if [[ ! "$tag" =~ ^[A-Za-z0-9._-]{1,100}$ ]]; then
+            echo "::error::no release to stamp, or an invalid tag"
+            exit 1
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "LATEST=$latest" >> "$GITHUB_ENV"
+
+      - name: Write the timestamp
+        if: steps.choose.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p work prev
+          gh release download "$TAG" --repo "$REPO" --dir work --pattern manifest.json
+          # The published timestamp, so the version keeps increasing.
+          if [ -n "$LATEST" ]; then
+            gh release download "$LATEST" --repo "$REPO" --dir prev --pattern timestamp.json || true
+          fi
+          python3 repo/scripts/refresh_timestamp.py \
+            --manifest work/manifest.json --previous prev/timestamp.json \
+            --expires-in-hours 72 --out work/timestamp.json
+
+      - name: Sign and check the signature
+        if: steps.choose.outputs.skip != 'true'
+        env:
+          TIMESTAMP_SECRET_KEY: ${{ secrets.TIMESTAMP_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="$RUNNER_TEMP/timestamp.key"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$TIMESTAMP_SECRET_KEY" > "$key"
+          minisign -S -s "$key" -m work/timestamp.json -x work/timestamp.json.minisig -t "abyssal-warden timestamp"
+          rm -f "$key"
+          # Refuse to publish anything the expected key cannot verify
+          # (timestamp-signing.pub: the public half of the key in the secret).
+          minisign -V -p repo/keys/timestamp-signing.pub -m work/timestamp.json -x work/timestamp.json.minisig
+
+      - name: Upload to the release
+        if: steps.choose.outputs.skip != 'true'
+        run: |
+          gh release upload "$TAG" --repo "$REPO" --clobber \
+            work/timestamp.json work/timestamp.json.minisig
+          cat work/timestamp.json

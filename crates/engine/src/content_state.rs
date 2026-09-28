@@ -21,11 +21,30 @@ use time::OffsetDateTime;
 use warden_core::Sha256Digest;
 
 use crate::bundle::VerifiedBundle;
+use crate::freshness::Timestamp;
 
 const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
+    #[error(
+        "update channel for {name:?}: timestamp version {offered} is older than version \
+         {recorded}, which was already seen (replay refused)"
+    )]
+    TimestampRollback {
+        name: String,
+        offered: u64,
+        recorded: u64,
+    },
+    #[error(
+        "update channel for {name:?} names sequence {offered}, older than the accepted \
+         sequence {recorded} (refused)"
+    )]
+    StaleTimestamp {
+        name: String,
+        offered: u64,
+        recorded: u64,
+    },
     #[error("content state {path}: {source}")]
     Io {
         path: PathBuf,
@@ -63,6 +82,17 @@ pub struct BundleRecord {
     pub accepted_at: OffsetDateTime,
 }
 
+/// The newest update-channel timestamp seen for a bundle.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimestampRecord {
+    pub version: u64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub expires: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub checked_at: OffsetDateTime,
+}
+
 /// A key revoked by an accepted bundle manifest.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -82,6 +112,9 @@ struct StateFile {
     /// content can remove trust, never add it.
     #[serde(default)]
     revoked_keys: BTreeMap<String, RevocationRecord>,
+    /// Update-channel timestamps, per bundle name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    timestamps: BTreeMap<String, TimestampRecord>,
 }
 
 /// The rollback state, loaded and locked for exclusive use until dropped.
@@ -201,6 +234,54 @@ impl ContentState {
                 })
             }
             Some(_) => Ok(()),
+        }
+    }
+
+    pub fn timestamp_for(&self, name: &str) -> Option<&TimestampRecord> {
+        self.data.timestamps.get(name)
+    }
+
+    /// Refuse an update-channel timestamp older than one already seen, or
+    /// naming an older bundle than the one accepted.
+    pub fn check_timestamp(&self, ts: &Timestamp) -> Result<(), StateError> {
+        if let Some(r) = self.data.timestamps.get(&ts.bundle)
+            && ts.version < r.version
+        {
+            return Err(StateError::TimestampRollback {
+                name: ts.bundle.clone(),
+                offered: ts.version,
+                recorded: r.version,
+            });
+        }
+        if let Some(b) = self.data.bundles.get(&ts.bundle)
+            && ts.sequence < b.sequence
+        {
+            return Err(StateError::StaleTimestamp {
+                name: ts.bundle.clone(),
+                offered: ts.sequence,
+                recorded: b.sequence,
+            });
+        }
+        Ok(())
+    }
+
+    /// Record a checked timestamp. Call [`ContentState::check_timestamp`]
+    /// first and [`ContentState::save`] after.
+    pub fn record_timestamp(&mut self, ts: &Timestamp, now: OffsetDateTime) {
+        let newer = self
+            .data
+            .timestamps
+            .get(&ts.bundle)
+            .is_none_or(|r| ts.version >= r.version);
+        if newer {
+            self.data.timestamps.insert(
+                ts.bundle.clone(),
+                TimestampRecord {
+                    version: ts.version,
+                    expires: ts.expires,
+                    checked_at: now,
+                },
+            );
         }
     }
 

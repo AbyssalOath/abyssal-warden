@@ -14,13 +14,14 @@ design for a future component. Design documents say so in their first line.
 | | [Privilege model](security/privilege-model.md) | current (Linux) |
 | | [Quarantine](security/quarantine.md) | current (Linux) |
 | | [Content trust: bundles, keyrings, rollback, key procedure](security/content-trust.md) | current |
-| | [Update security](security/update-security.md) | signing current; updates design |
+| | [Update security](security/update-security.md) | current (no project channel yet) |
 | Detection | [Signatures](detection/signatures.md) | current |
 | | [YARA rules](detection/yara.md) | current |
 | | [Archive scanning](detection/archives.md) | current (ZIP) |
 | | [System checks: persistence and integrity rules](detection/system-checks.md) | current (Linux; Windows live) |
 | | [Heuristics](detection/heuristics.md) | current (PE rules unmeasured) |
 | | [Detection evaluation methodology](detection/testing.md) | current |
+| | [Third-party content sources and licences](detection/content-sources.md) | current (nothing shipped) |
 | Platform | [Windows](platform/windows.md) | current + research |
 | | [Linux](platform/linux.md) | current + research |
 | Development | [Setup](development/setup.md) | current |
@@ -32,4 +33,5 @@ design for a future component. Design documents say so in their first line.
 | | [Remediation](user/remediation.md) | current (Linux) |
 | | [System check](user/system-check.md) | current (Linux; Windows live) |
 | | [Service](user/service.md) | current (Linux) |
+| | [Content updates](user/updates.md) | current (no project channel yet) |
 | | [Known limitations](known-limitations.md) | current |

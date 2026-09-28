@@ -1,0 +1,6 @@
+# Pinned upstream feeds for the official content bundle.
+# Format: name  git-url  full-commit
+# Update a pin only after reviewing the upstream diff and re-checking its
+# licence (docs/detection/content-sources.md).
+eset-malware-ioc          https://github.com/eset/malware-ioc                     17baf44964a77368e9149f4f593eb098beddf1c5
+reversinglabs-yara-rules  https://github.com/reversinglabs/reversinglabs-yara-rules  e0a0be54aa1e11ccfd6854e4f19e9476f328fd84

@@ -1,0 +1,29 @@
+[package]
+name = "warden-update"
+description = "Abyssal Warden content updater: fetch, verify and install signed content bundles"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+warden-core.workspace = true
+warden-engine.workspace = true
+getrandom = { version = "0.3", features = ["std"] }
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+# HTTPS client: rustls with the operating system's certificate store. TLS is
+# not the security boundary (every file is verified against signatures); it
+# keeps the traffic private and the mirror authentic.
+ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider", "_ring", "platform-verifier"] }
+
+[dev-dependencies]
+minisign = "0.9"
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -37,6 +37,7 @@ bundle/
   manifest.json.minisig.2  optional further signatures (up to .16)
   signatures/*.json        hash databases
   rules/*.yar              YARA rules
+  LICENSE*, NOTICE*, *.txt, *.md   licence and attribution notices (kind "notice")
 ```
 
 ```json
@@ -97,7 +98,7 @@ manifest does not list are ignored.
   "keys": [
     { "id": "70EF691BC71E4DD9", "public_key": "RW...", "description": "...",
       "not_before": "2026-09-25T00:00:00Z", "not_after": "2028-09-25T00:00:00Z",
-      "revoked": false }
+      "revoked": false, "roles": ["content"] }
   ]
 }
 ```
@@ -106,6 +107,12 @@ manifest does not list are ignored.
 * `policy.threshold` (1 to 16): distinct signers a bundle manifest needs.
   With more than 1, individually signed files are refused. Several keyrings:
   the highest threshold wins.
+* `roles` (default `["content"]`): `content` keys sign manifests and
+  content files; `timestamp` keys sign only the update channel's
+  `timestamp.json` (below). A key may hold both, but should not: the
+  timestamp key is meant to live online. A role is granted only by a
+  keyring; a key given with `--trusted-key` is a content key, and when a
+  key appears in several places only the roles every source grants remain.
 * `bundles[].min_sequence`: the lowest acceptable sequence for that bundle,
   set to the current release when the keyring is published. It protects
   fresh installations. Several keyrings: the highest floor wins.
@@ -116,6 +123,34 @@ manifest does not list are ignored.
   keys that outlive its own revocation. Keyrings change only through the
   channel that installs the software (package, release).
 
+## Update timestamps
+
+The update channel (`abyssal-warden update`,
+[updates.md](../user/updates.md)) adds a TUF-style freshness layer
+([ADR-0020](../architecture/decisions/0020-content-updates.md)):
+
+```json
+{
+  "format": "abyssal-warden.content-timestamp",
+  "format_version": 1,
+  "version": 17,
+  "bundle": "abyssal-warden-official",
+  "sequence": 2026092501,
+  "manifest_sha256": "...",
+  "manifest_size": 1234,
+  "issued": "2026-09-28T00:00:00Z",
+  "expires": "2026-10-01T00:00:00Z"
+}
+```
+
+Signed (`timestamp.json.minisig`) by a key with the `timestamp` role. The
+client refuses a timestamp that has expired, whose lifetime exceeds 31
+days, whose `version` is lower than the last one seen, or that names an
+older bundle sequence than the installed one; and a manifest whose size
+or SHA-256 differs from the timestamp. The timestamp key therefore cannot introduce or roll back
+content; stolen, it can only delay updates until its timestamps expire or
+the key is revoked. Created with `content timestamp DIR --version N`.
+
 ## State file
 
 | Where | Path |
@@ -124,17 +159,23 @@ manifest does not list are ignored.
 | other Unix users | `$XDG_STATE_HOME/abyssal-warden/content-state.json` (default `~/.local/state/...`) |
 | Windows | `%LOCALAPPDATA%\AbyssalWarden\content-state.json` |
 
-Override with `--content-state FILE`. The file is 0600 in a 0700 directory
+The state also records the last update timestamp (`version` and `expires`)
+per bundle. Override with `--content-state FILE`. The file is 0600 in a 0700 directory
 (Unix), written atomically under a lock. If it is unreadable the scanner
 **fails closed**: deleting it is an explicit, visible reset of rollback
 protection.
 
 ## Project signing-key procedure
 
-**Status: no project key exists yet.** The example content in `examples/`
+**Status: project keys generated (2026-09-28)**; public keys and the
+project keyring are in [`keys/`](../../keys/): content A
+`E38F08952E4891C4` (signs releases), content B `4102DBFF6CC818E7` and C
+`9E95EAD8F3B83A9D` (standby), timestamp online `D6307A0B86E9900B`,
+timestamp backup `0146DC1FDAF84B3D`. Threshold 1 (single maintainer). No
+bundle has been signed with them yet. The example content in `examples/`
 is signed with a throwaway test key (`70EF691BC71E4DD9`) whose secret was
-discarded. It must never be trusted outside testing. Before the first real
-content release, the project owner performs the following.
+discarded; it must never be trusted outside testing. The procedure the
+owner followed, and follows for every release, is below.
 
 ### Tools
 
@@ -161,7 +202,24 @@ rsign generate -p aw-content-2026C.pub -s aw-content-2026C.key -c "Abyssal Warde
 
 * Store each secret key on separate offline media, with separate backups in
   different physical locations. Ideally different maintainers hold A and B.
-* Never put a secret key in CI, a repository, or an online machine.
+* Never put a content secret key in CI, a repository, or an online machine.
+
+**Timestamp keys** (update channel, [updates.md](../user/updates.md)):
+two more keys, holding only the `timestamp` role.
+
+```sh
+# Online key: no password, because the scheduled workflow signs with it.
+minisign -G -W -p timestamp-online.pub -s timestamp-online.key -c "Abyssal Warden timestamp (online)"
+# Backup key: password-protected, kept offline like the content keys.
+rsign generate -p timestamp-backup.pub -s timestamp-backup.key -c "Abyssal Warden timestamp (backup)"
+```
+
+* `timestamp-online.key` goes **only** into the content repository's
+  `TIMESTAMP_SECRET_KEY` secret (`timestamp-signing` environment), then is
+  deleted from the machine that generated it. If it is ever needed again,
+  generate a new one: it is cheap to replace because of the backup key.
+* `timestamp-backup.key` is stored offline with the content keys and is
+  used only after the online key is retired.
 
 ### 2. Publish
 
@@ -169,7 +227,10 @@ rsign generate -p aw-content-2026C.pub -s aw-content-2026C.key -c "Abyssal Warde
 * Build the keyring with all keys valid (so rotation needs no keyring
   change), `not_after` about two years out, `policy.threshold` 2, and a
   `bundles` floor equal to the latest release's sequence. Update the floor
-  in every software release.
+  in every software release. Content keys get `"roles": ["content"]`, both
+  timestamp keys `"roles": ["timestamp"]`; the backup is listed from the
+  first release, which is what lets it take over without a software
+  release.
 * Ship the keyring with releases and packages as
   `/etc/abyssal-warden/keyring.json`.
 * Publish the key IDs out of band too (release notes, website, signed tag),
@@ -209,9 +270,27 @@ generate a new standby key C and add it in the same or a later keyring update.
    promoted, with a security advisory (covers fresh installations).
 3. Generate a new standby key.
 
-Limitations: a client that never receives a newer bundle only learns of the
-revocation from a keyring update. There is no online freshness check (that
-needs TUF's timestamp role; see [update-security.md](update-security.md)).
+**Online timestamp key leaked** (or the content repository or its
+workflow compromised):
+
+1. Delete the `TIMESTAMP_SECRET_KEY` secret.
+2. Publish the next bundle signed with the content keys and
+   `--revoke-key <ONLINE_TIMESTAMP_ID>`, and sign its timestamp by hand with
+   the **backup** timestamp key (`content timestamp`, then
+   `rsign sign -s timestamp-backup.key timestamp.json`). Every client that
+   installs it stops trusting the online key (tested:
+   `a_leaked_timestamp_key_is_retired_for_the_backup_key`).
+3. Either keep signing timestamps with the backup key by hand, or put the
+   backup key into the secret and its public key into the content
+   repository's `keys/timestamp-signing.pub` (the workflow verifies every
+   signature against that file), and ship a new backup key in the next
+   software release's keyring.
+
+Until then, the attacker can at most keep clients on the current bundle,
+and only until that bundle expires.
+
+Limitations: a client that never receives a newer bundle only learns of a
+revocation from a keyring update.
 
 ## Testing
 

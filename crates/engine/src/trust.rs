@@ -97,10 +97,26 @@ pub enum SignaturePolicy {
     AllowUnsigned,
 }
 
+/// What a key may sign. A key signs content (bundles, databases, rules)
+/// unless its keyring says otherwise; a `timestamp` key signs only the
+/// short-lived freshness file of the update channel and can never make
+/// content trusted (docs/architecture/decisions/0020-content-updates.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyRole {
+    Content,
+    Timestamp,
+}
+
+fn content_role() -> Vec<KeyRole> {
+    vec![KeyRole::Content]
+}
+
 #[derive(Clone, Debug)]
 struct TrustedKey {
     id: KeyId,
     key: PublicKey,
+    roles: Vec<KeyRole>,
     /// Validity window and revocation, from a keyring. Keys given directly
     /// (`--trusted-key`) have no window and are not revoked.
     not_before: Option<OffsetDateTime>,
@@ -175,6 +191,9 @@ struct KeyringEntry {
     not_after: Option<OffsetDateTime>,
     #[serde(default)]
     revoked: bool,
+    /// Defaults to `["content"]`.
+    #[serde(default = "content_role")]
+    roles: Vec<KeyRole>,
 }
 
 /// Value of a keyring's `format` field.
@@ -251,6 +270,7 @@ impl TrustedKeys {
             self.keys.push(TrustedKey {
                 id,
                 key,
+                roles: content_role(),
                 not_before: None,
                 not_after: None,
                 revoked: false,
@@ -318,6 +338,15 @@ impl TrustedKeys {
             {
                 return Err(invalid(format!("keys[{i}]: not_before is after not_after")));
             }
+            if entry.roles.is_empty() {
+                return Err(invalid(format!("keys[{i}]: roles must not be empty")));
+            }
+            let existed = self.keys.iter().any(|k| {
+                base64_decode(&entry.public_key)
+                    .and_then(|r| r.get(2..10).map(<[u8]>::to_vec))
+                    .as_deref()
+                    == Some(&k.id.0[..])
+            });
             let id = self
                 .add_key_text(&entry.public_key, source_name)
                 .map_err(|e| invalid(format!("keys[{i}]: {e}")))?;
@@ -328,6 +357,17 @@ impl TrustedKeys {
                 )));
             }
             if let Some(k) = self.keys.iter_mut().find(|k| k.id == id) {
+                // A keyring sets the roles of keys it introduces, and can
+                // only narrow those of keys given before it.
+                k.roles = if existed {
+                    k.roles
+                        .iter()
+                        .copied()
+                        .filter(|r| entry.roles.contains(r))
+                        .collect()
+                } else {
+                    entry.roles.clone()
+                };
                 k.revoked |= entry.revoked;
                 k.not_before = k.not_before.max(entry.not_before);
                 k.not_after = match (k.not_after, entry.not_after) {
@@ -365,11 +405,24 @@ impl TrustedKeys {
         path: &Path,
         now: OffsetDateTime,
     ) -> Result<(KeyId, String), TrustError> {
+        self.verify_role(data, signature_text, path, now, KeyRole::Content)
+    }
+
+    /// [`TrustedKeys::verify`] for keys holding `role`. A signature from a
+    /// key without the role is refused as untrusted.
+    pub fn verify_role(
+        &self,
+        data: &[u8],
+        signature_text: &str,
+        path: &Path,
+        now: OffsetDateTime,
+        role: KeyRole,
+    ) -> Result<(KeyId, String), TrustError> {
         let sig = Signature::decode(signature_text).map_err(|e| TrustError::InvalidSignature {
             path: path.to_owned(),
             reason: e.to_string(),
         })?;
-        for k in &self.keys {
+        for k in self.keys.iter().filter(|k| k.roles.contains(&role)) {
             // `false`: legacy (non-prehashed) signatures are refused.
             if k.key.verify(data, &sig, false).is_ok() {
                 if k.revoked {
@@ -583,6 +636,55 @@ mod tests {
 
     fn at(s: &str) -> OffsetDateTime {
         OffsetDateTime::parse(s, &Rfc3339).unwrap()
+    }
+
+    #[test]
+    fn key_roles_separate_content_from_timestamps() {
+        let content = Signer::new();
+        let stamp = Signer::new();
+        let both = Signer::new();
+        let json = keyring_json(&[
+            (&content, ""),
+            (&stamp, r#","roles":["timestamp"]"#),
+            (&both, r#","roles":["content","timestamp"]"#),
+        ]);
+        let mut keys = TrustedKeys::new();
+        keys.add_keyring(json.as_bytes(), "k").unwrap();
+        let now = OffsetDateTime::now_utc();
+        let p = Path::new("x");
+        let data = b"data";
+        // Content keys verify content; timestamp keys verify only timestamps.
+        assert!(keys.verify(data, &content.sign(data), p, now).is_ok());
+        assert!(
+            keys.verify_role(data, &content.sign(data), p, now, KeyRole::Timestamp)
+                .is_err()
+        );
+        assert!(matches!(
+            keys.verify(data, &stamp.sign(data), p, now),
+            Err(TrustError::Untrusted { .. })
+        ));
+        assert!(
+            keys.verify_role(data, &stamp.sign(data), p, now, KeyRole::Timestamp)
+                .is_ok()
+        );
+        assert!(keys.verify(data, &both.sign(data), p, now).is_ok());
+        assert!(
+            keys.verify_role(data, &both.sign(data), p, now, KeyRole::Timestamp)
+                .is_ok()
+        );
+        // A keyring can only narrow the roles of a key given before it.
+        let mut narrowed = TrustedKeys::new();
+        narrowed.add_key_text(&stamp.pub_text(), "cli").unwrap();
+        narrowed.add_keyring(json.as_bytes(), "k").unwrap();
+        assert!(narrowed.verify(data, &stamp.sign(data), p, now).is_err());
+        assert!(
+            narrowed
+                .verify_role(data, &stamp.sign(data), p, now, KeyRole::Timestamp)
+                .is_err()
+        );
+        // Empty role lists are rejected.
+        let bad = keyring_json(&[(&content, r#","roles":[]"#)]);
+        assert!(TrustedKeys::new().add_keyring(bad.as_bytes(), "k").is_err());
     }
 
     #[test]

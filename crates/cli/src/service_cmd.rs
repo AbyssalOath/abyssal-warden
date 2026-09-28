@@ -450,7 +450,32 @@ fn print_report(sock: &std::path::Path, j: &JobSummary, format: Format) -> Resul
             print!("{}", render(format, &r, |r| render_system(r, false))?);
             Ok(crate::system_cmd::exit_code(&r))
         }
+        JobKind::Update => {
+            print!("{}", render(format, &report, render_update)?);
+            Ok(0)
+        }
     }
+}
+
+fn render_update(v: &serde_json::Value) -> String {
+    let text = |k: &str| {
+        v.get(k)
+            .map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_owned))
+            .unwrap_or_default()
+    };
+    let changed = v.get("changed").and_then(serde_json::Value::as_bool) == Some(true);
+    format!(
+        "bundle \"{}\" sequence {}{}\n  installed at {}\n  update channel timestamp valid until {}\n",
+        sanitize(&text("bundle")),
+        text("sequence"),
+        if changed {
+            " (newly installed)"
+        } else {
+            " (already current)"
+        },
+        sanitize(&text("installed")),
+        sanitize(&text("timestamp_expires")),
+    )
 }
 
 fn render<T: serde::Serialize>(

@@ -42,6 +42,9 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 # MemoryDenyWriteExecute is not set: YARA-X compiles rules to machine code
 # (wasmtime) in the scanner children, which inherit it.
+# No IP networking. `update` schedules with an https:// update_source need
+# AF_INET AF_INET6 added in a drop-in (docs/user/updates.md#in-the-service);
+# a local-directory mirror needs nothing.
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
 PrivateNetwork=no
 SystemCallArchitectures=native

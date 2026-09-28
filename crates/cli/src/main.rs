@@ -10,11 +10,13 @@
 
 mod content;
 mod content_cmd;
+mod content_import;
 mod output;
 mod paths;
 mod quarantine;
 mod service_cmd;
 mod system_cmd;
+mod update_cmd;
 
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -67,6 +69,8 @@ enum Command {
     /// Talk to the local service (abyssal-wardend): scans, jobs, schedules,
     /// quarantine.
     Service(service_cmd::ServiceArgs),
+    /// Download and install the latest signed content bundle.
+    Update(update_cmd::UpdateArgs),
 }
 
 #[derive(Args, Debug)]
@@ -212,6 +216,7 @@ fn main() -> ExitCode {
         Command::Content(cmd) => content_cmd::run(cmd),
         Command::SystemCheck(args) => system_cmd::run(*args),
         Command::Service(args) => service_cmd::run(args),
+        Command::Update(args) => update_cmd::run(&args),
     }
 }
 

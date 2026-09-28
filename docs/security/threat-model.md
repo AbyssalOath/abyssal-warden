@@ -151,11 +151,20 @@ residual risk).
 
 ### T7: Compromised update sources
 
-* **Current:** partial. There is no update mechanism. Signed bundles give
-  rollback, freeze and mix-and-match protection, and keyrings give
-  revocation and rotation (T6).
-* **Future:** an automatic updater (TUF: threshold signatures, role
-  separation), never executing downloaded code
+* **Current:** mitigated in design and code; no project channel is
+  operated yet. `abyssal-warden update` fetches over https only (or from a
+  local mirror), checks a signed timestamp from a separate `timestamp`-role
+  key (freeze and replay protection), checks the manifest against it,
+  downloads into private staging with size and hash checks, and installs
+  only after full verification and parsing; a failure leaves the installed
+  content untouched (ADR-0020). Signed bundles give rollback and
+  mix-and-match protection, keyrings give revocation and rotation (T6).
+  Downloaded content is data, never executed. In the service the updater
+  runs without capabilities.
+* **Residual:** a stolen timestamp key can withhold updates until its
+  timestamps expire (at most 31 days) or it is revoked; a stolen content key
+  below the threshold can do nothing alone. Operating the channel (key
+  custody, hosting) is outside the code
   ([update-security.md](update-security.md)).
 
 ### T8: Unauthorised GUI or CLI-to-service requests

@@ -8,6 +8,7 @@ examples/signatures/** -text
 examples/rules/** -text
 examples/keys/** -text
 examples/bundle/** -text
+keys/** -text
 *.minisig -text
 *.yar -text
 *.yara -text

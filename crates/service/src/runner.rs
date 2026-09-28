@@ -53,6 +53,9 @@ pub(crate) enum Identity {
 pub(crate) const SCAN_CAPS: &[&str] = &["dac_read_search"];
 #[cfg_attr(windows, allow(dead_code))]
 pub(crate) const SYSTEM_CHECK_CAPS: &[&str] = &["dac_read_search", "sys_ptrace"];
+/// Updates need the network and their own directory, nothing more.
+#[cfg_attr(windows, allow(dead_code))]
+pub(crate) const UPDATE_CAPS: &[&str] = &[];
 
 /// `setpriv` arguments for `identity`, ending with `--`.
 #[cfg_attr(windows, allow(dead_code))]

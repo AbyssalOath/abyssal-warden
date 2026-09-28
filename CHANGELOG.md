@@ -2,6 +2,59 @@
 
 ## Unreleased (0.1.0)
 
+### Added (known limitations, phase 9: content updates and sources)
+- `abyssal-warden update` and the `warden-update` crate (ADR-0020): fetch
+  the latest signed bundle from an `https://` URL or a local mirror, check
+  a signed `timestamp.json` (freshness, replay, stale mirror), check the
+  manifest against it, download into private staging with size and hash
+  checks, verify and parse exactly as scans do, then install atomically
+  (an interrupted swap is recovered). `--format json` for scripting.
+- Keyring key roles (`content`, `timestamp`); timestamp keys can only
+  delay updates, never introduce content. `content timestamp` writes the
+  timestamp to sign.
+- `scan --installed` / `system-check --installed` (with `--content-dir`)
+  load bundles installed by `update`.
+- Service: `update_source` and `update` schedules, run as the scanner
+  account without capabilities; jobs run as that account use installed
+  bundles.
+- Feed importers: `content import-hashes` (SHA-256 lists to a hash database
+  with the licence recorded) and `content import-yara` (per-file vetting,
+  exclusion lists). `content manifest --flat` for GitHub Releases, whose
+  assets have no paths. `content key-entry` prints keyring entries for
+  public keys.
+- Official bundle pipeline: `packaging/content-channel/feeds.lock` pins
+  ESET malware-ioc and ReversingLabs YARA rules by commit;
+  `scripts/build-bundle.sh` fetches, converts, vets, drops what matches a
+  clean corpus, adds licences and `SOURCES.md`, and writes a flat
+  manifest. ESET campaigns whose reports mark a listed file as clean are
+  left out. Importers gained `--clean-corpus`, `import-hashes
+  --name-by-directory` and `import-yara --prefix`.
+- Project keyring `keys/keyring.json`: three content keys (threshold 1)
+  and two timestamp keys (online, offline backup).
+- Content channel kit (`packaging/content-channel/`): GitHub Actions
+  workflow that re-signs the timestamp twice a day with an online
+  timestamp key held in an environment secret, and a standard-library
+  script that writes it. An offline backup timestamp key takes over after a
+  leak through a revocation carried by content, without a software release;
+  the updater applies recorded revocations itself.
+- Licence and attribution files in bundles (`notice` kind). YARA findings
+  carry rule author, reference and licence (Detection Rule License
+  compliance).
+- Licence review of candidate feeds (docs/detection/content-sources.md).
+- Fuzz target `content-metadata`.
+
+### Added (known limitations, phase 8: Windows parity)
+- `warden-winsec`, the only crate allowed `unsafe`, in its Windows modules
+  only (ADR-0019); pure, cross-platform security-descriptor analysis.
+- Windows quarantine store with protected DACLs, reparse-point-safe opens,
+  delete by handle, hard-link restore and Event Log anchors; locked files
+  reported as `locked`.
+- The service on Windows: SCM integration and a named-pipe transport with
+  an explicit security descriptor, remote clients refused, clients
+  identified from their token.
+- The service claims its endpoint before touching any state (both
+  platforms).
+
 ### Added (known limitations, phase 7: service, IPC, privilege separation)
 - `abyssal-wardend` (Linux) and `abyssal-warden service ...` (ADR-0018):
   Unix-socket IPC with `SO_PEERCRED`, a versioned, size-limited protocol

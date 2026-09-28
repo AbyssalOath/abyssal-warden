@@ -291,3 +291,52 @@ fn rules_match_inside_archives() {
         other => panic!("{other:?}"),
     }
 }
+
+/// Rule author, reference and licence are carried into the finding: some
+/// rule licences (e.g. the Detection Rule License) require attribution in
+/// match results.
+#[test]
+fn rule_attribution_is_kept_in_findings() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("hit.bin"),
+        b"ABYSSAL-WARDEN-YARA-SYNTHETIC-MARKER",
+    )
+    .unwrap();
+    let det = compile(
+        r#"rule Attributed {
+            meta:
+                author = "Example Author"
+                reference = "https://example.org/rule"
+                license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
+            strings: $m = "ABYSSAL-WARDEN-YARA-SYNTHETIC-MARKER"
+            condition: $m
+        }
+        rule Hostile {
+            meta: author = "evil\x1b[2J"
+            strings: $m = "ABYSSAL-WARDEN-YARA-SYNTHETIC-MARKER"
+            condition: $m
+        }"#,
+    )
+    .unwrap();
+    let report = scan(dir.path(), det, |_| {});
+    let by_rule = |name: &str| report.findings.iter().find(|f| f.name == name).unwrap();
+    let a = by_rule("Attributed");
+    assert_eq!(a.evidence.len(), 2);
+    assert!(a.evidence[1].summary.contains("author: Example Author"));
+    assert!(
+        a.evidence[1]
+            .summary
+            .contains("reference: https://example.org/rule")
+    );
+    assert!(
+        a.evidence[1]
+            .summary
+            .contains("licence: Detection Rule License 1.1")
+    );
+    assert_eq!(
+        by_rule("Hostile").evidence.len(),
+        1,
+        "unsafe metadata is dropped"
+    );
+}

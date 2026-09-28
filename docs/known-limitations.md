@@ -10,7 +10,10 @@ These are being worked through in phases; see the
 ## Detection
 
 * **No real signatures or rules ship with the project.** Without content you
-  provide, scans detect nothing (the CLI warns about this).
+  provide, scans detect nothing (the CLI warns about this). Importers for
+  openly licensed feeds exist and their licences are reviewed
+  ([content-sources](detection/content-sources.md)), but nothing is
+  published and detection rates are unmeasured.
 * File detection is exact SHA-256 matching, YARA rules and optional
   structural heuristics (`--heuristics`). No behavioural, emulation or
   memory scanning.
@@ -103,6 +106,8 @@ See [system-checks.md](detection/system-checks.md#what-the-checks-cannot-do).
   authorisation is by group, not polkit; parser children have no
   seccomp/landlock sandbox yet. Any local user can queue scans up to the
   queue limit unless `socket_group` is set.
-* No GUI, update mechanism or signed releases.
+* No GUI or signed releases. The content updater exists, but the project
+  publishes no update channel, content or signing keys yet
+  ([updates](user/updates.md)).
 * Scan reports are not signed.
 * Rust 1.93 or later is required (bound by YARA-X); checked in CI.

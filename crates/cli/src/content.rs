@@ -38,7 +38,7 @@ pub(crate) struct TrustArgs {
 }
 
 pub(crate) struct Trust {
-    keys: TrustedKeys,
+    pub(crate) keys: TrustedKeys,
     policy: SignaturePolicy,
 }
 
@@ -102,6 +102,13 @@ pub(crate) struct BundleArgs {
     /// protection; see docs/security/content-trust.md.
     #[arg(long = "content", value_name = "DIR")]
     pub(crate) dirs: Vec<PathBuf>,
+    /// Also load every bundle installed by `abyssal-warden update` (in the
+    /// default content directory, or --content-dir).
+    #[arg(long)]
+    pub(crate) installed: bool,
+    /// Content directory for --installed.
+    #[arg(long, value_name = "DIR", requires = "installed")]
+    pub(crate) content_dir: Option<PathBuf>,
     /// Accept bundles past their expiry time (e.g. offline systems). The
     /// report records it.
     #[arg(long)]
@@ -115,6 +122,38 @@ pub(crate) struct BundleArgs {
 /// Detectors built from verified bundles, and what the report records.
 impl BundleArgs {
     /// The content state location: `--content-state`, or the default.
+    /// Bundle directories to load: `--content`, plus with `--installed`
+    /// every directory holding a manifest in the content directory.
+    pub(crate) fn bundle_dirs(&self) -> Result<Vec<PathBuf>, String> {
+        let mut dirs = self.dirs.clone();
+        if self.installed {
+            let root = self
+                .content_dir
+                .clone()
+                .or_else(crate::paths::content_dir_path)
+                .ok_or("cannot determine the content directory; use --content-dir")?;
+            let mut found: Vec<PathBuf> = match std::fs::read_dir(&root) {
+                Ok(entries) => entries
+                    .flatten()
+                    .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                    .map(|e| e.path())
+                    .filter(|p| p.join(warden_engine::bundle::MANIFEST_FILE).is_file())
+                    .collect(),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(e) => return Err(format!("{}: {e}", root.display())),
+            };
+            if found.is_empty() {
+                return Err(format!(
+                    "no installed content in {}; run `abyssal-warden update` first",
+                    root.display()
+                ));
+            }
+            found.sort();
+            dirs.extend(found);
+        }
+        Ok(dirs)
+    }
+
     pub(crate) fn state_path(&self) -> Option<PathBuf> {
         self.content_state
             .clone()
@@ -139,7 +178,8 @@ pub(crate) fn load_bundles(
         detectors: Vec::new(),
         infos: Vec::new(),
     };
-    if args.dirs.is_empty() {
+    let dirs = args.bundle_dirs()?;
+    if dirs.is_empty() {
         return Ok(out);
     }
     let state_path = args
@@ -157,7 +197,7 @@ pub(crate) fn load_bundles(
         now,
     };
     let mut bundles = Vec::new();
-    for dir in &args.dirs {
+    for dir in &dirs {
         let b = load_bundle(dir, &keys, opts).map_err(|e| e.to_string())?;
         if bundles
             .iter()
@@ -197,6 +237,12 @@ pub(crate) fn load_bundles(
     Ok(out)
 }
 
+/// Checks that every file of a staged bundle parses (hash databases) and
+/// compiles (YARA rules), as a scan would: the updater's validator.
+pub(crate) fn validate_bundle(b: &VerifiedBundle) -> Result<(), String> {
+    bundle_detectors(b).map(|_| ())
+}
+
 fn bundle_detectors(b: &VerifiedBundle) -> Result<Vec<Box<dyn Detector>>, String> {
     let mut detectors: Vec<Box<dyn Detector>> = Vec::new();
     let mut sources = Vec::new();
@@ -208,6 +254,7 @@ fn bundle_detectors(b: &VerifiedBundle) -> Result<Vec<Box<dyn Detector>>, String
                     .map_err(|e| format!("{origin}: {e}"))?;
                 detectors.push(Box::new(HashSignatureDetector::verified_by(db, &b.signers)));
             }
+            ContentKind::Notice => {}
             ContentKind::YaraRules => {
                 let text = String::from_utf8(f.data.clone())
                     .map_err(|_| format!("{origin}: rule source is not UTF-8"))?;
