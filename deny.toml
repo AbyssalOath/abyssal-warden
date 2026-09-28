@@ -54,6 +54,11 @@ exceptions = [
   # hashes and paths from findings.
   { allow = ["BSL-1.0"], crate = "clipboard-win" },
   { allow = ["BSL-1.0"], crate = "error-code" },
+  # egui's embedded default fonts (Hack, Noto Emoji, Ubuntu Light). Both font
+  # licences allow bundling and embedding in software when each copy carries
+  # the licence text: see licenses/third-party/egui-fonts/, which ships with
+  # every build of the app.
+  { allow = ["OFL-1.1", "Ubuntu-font-1.0"], crate = "epaint_default_fonts" },
 ]
 
 [licenses.private]

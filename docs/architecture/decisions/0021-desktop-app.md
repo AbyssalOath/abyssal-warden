@@ -45,6 +45,10 @@ service, which would make the app useless until the service is installed.
 ## Consequences
 
 * The app is usable right after download, without the service.
+* egui embeds its default fonts (Hack, Noto Emoji, Ubuntu Light; OFL-1.1,
+  Ubuntu Font Licence, MIT). The licences allow embedding when each copy
+  carries the licence text: `licenses/third-party/egui-fonts/` ships with
+  every build, and `deny.toml` allows those licences for that crate only.
 * A changed project key needs a new program release (as before: keys are
   never learned from content).
 * Service scans show no live counts (the protocol has no progress

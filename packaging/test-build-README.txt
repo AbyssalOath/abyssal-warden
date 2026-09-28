@@ -16,6 +16,8 @@ Contents
   abyssal-warden.png      the app icon
   abyssal-warden.desktop  Linux menu entry (see step 5)
   demo/                   a harmless synthetic test bundle (test key only)
+  licenses/               licences of third-party material in the programs
+                          (the app's fonts)
   SHA256SUMS              checksums of the programs and keyring
 
 The app: double-click abyssal-warden-gui.exe (Windows) or run

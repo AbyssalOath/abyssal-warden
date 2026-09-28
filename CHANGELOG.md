@@ -13,6 +13,9 @@
   channel is the default source (`--no-builtin-keyring` to opt out).
 - `scan --progress-json` for front ends.
 - App icon, Linux desktop entry, and the app in test builds.
+- The app embeds egui's default fonts (OFL-1.1, Ubuntu Font Licence,
+  MIT); their licence texts are in `licenses/third-party/egui-fonts/` and
+  ship with every build.
 
 ### Fixed
 - AW-SYS-019 reported `/etc/ld.so.cache` as code injected into the scanner
